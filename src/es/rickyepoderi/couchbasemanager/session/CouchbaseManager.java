@@ -471,6 +471,7 @@ public class CouchbaseManager extends StandardManager {
             client = new CouchbaseClient(baseURIs, this.bucket, this.username, this.password);
         } catch (Exception e) {
             log.log(Level.SEVERE, "Error initiliazing spymemcached client...", e);
+            initialized = false;
         }
         log.fine("CouchbaseManager.init: exit");
     }
@@ -496,6 +497,10 @@ public class CouchbaseManager extends StandardManager {
         log.fine("CouchbaseManager.start: init");
         if (!initialized) {
             init();
+            if (!initialized) {
+                log.severe("Couchbase Manager couldn't be initialized");
+                throw new LifecycleException("The manager couldn't be initialized");
+            }
         }
         // Validate and update our current component state
         if (started) {
@@ -571,7 +576,7 @@ public class CouchbaseManager extends StandardManager {
                 result.setCas(-1);
                 result.setMemStatus(SessionMemStatus.ALREADY_LOCKED);
             } else {
-                log.log(Level.SEVERE, "Error loading from the repo {0}", future.getStatus());
+                log.log(Level.INFO, "Error loading from the repo {0}", future.getStatus());
                 result.setCas(-1);
                 result.setMemStatus(SessionMemStatus.ERROR);
             }
