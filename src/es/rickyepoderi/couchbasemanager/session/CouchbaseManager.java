@@ -36,16 +36,18 @@ import org.apache.catalina.session.StandardManager;
  * <ul>
  * <li>The manager tries to load/unload the session every request. The session
  * is loaded when locking and saved to the store when unlocked (so it is
- * supposed that any modification is always done in locked session state).</li>
+ * supposed that any modification is always done in locked session state). 
+ * Now this is changed, it is only done when non-sticky.</li>
  * <li>Sessions are also stored in normal Map of StandardManager but
  * the session is cleared when not used (cleared means attributes are
- * removed).</li>
+ * removed). Again only when non-sticky.</li>
  * <li>The majority of this process lays inside MemWrapperSession implementation.
  * This special session clears its content inside unlock methods and loads it
- * from the memory repository in lock ones.</li>
+ * from the memory repository in lock ones. In sticky process lock/unlock
+ * is locally managed and the session is not read again or locked.</li>
  * <li>MemWrapperSession uses a activity status flag to record any attribute 
  * modification. If the session is dirty it is saved in the external repository, 
- * if accessed just touched. Obviously session is always unlocked.</li>
+ * if accessed just touched. Obviously session is always unlocked if non-sticky.</li>
  * <li>Expiration is managed by the repository too. Although the processExpires
  * of the StandardManager is used. The MemWrapperSession always checks 
  * external repository to check definitely expiration. Trying to minimize
@@ -61,7 +63,7 @@ import org.apache.catalina.session.StandardManager;
  * extending from ManagerBase.</li>
  * </ul>
  * 
- * <p>Restrictions in this first implementation:</p>
+ * <p>Restrictions in the implementation:</p>
  *
  * <ul>
  * <li>Only one couchbase client is used for all the sessions. 
@@ -76,6 +78,8 @@ import org.apache.catalina.session.StandardManager;
  * touched, but now couchbase client needs two methods to do that (touch
  * and unlock). It would be nice if a touchAndUnlock exists.</li>
  * <li>Same way when session is locked cannot be deleted.</li>
+ * <li>Error conditions (couchbase is down for example) are not tested or
+ * even thought about. So don't know what happen in those weird conditions.</li>
  * </ul>
  * 
  * @author ricky
@@ -131,6 +135,21 @@ public class CouchbaseManager extends StandardManager {
      */
     protected String password = null;
     
+    /**
+     * stickyness of the manager
+     */
+    protected boolean sticky = false;
+    
+    /**
+     * lockTime to use inside couchbase locks
+     */
+    protected int lockTime = 30;
+    
+    /**
+     * maximum time to refresh session without saving
+     */
+    protected long maxAccessTimeNotSaving = 300000L;
+    
     //
     // CONSTRUCTOR
     //
@@ -180,6 +199,55 @@ public class CouchbaseManager extends StandardManager {
      */
     public void setUsername(String username) {
         this.username = username;
+    }
+
+    /**
+     * Getter to the sticky property.
+     * @return the sticky (true is configured as sticky, false as not)
+     */
+    public boolean isSticky() {
+        return sticky;
+    }
+
+    /**
+     * Setter to the sticky property.
+     * @param sticky The new sticky
+     */
+    public void setSticky(boolean sticky) {
+        this.sticky = sticky;
+    }
+
+    /**
+     * Getter for the lock time in couchbase.
+     * @return The amount of time in seconds a key is locked
+     */
+    public int getLockTime() {
+        return lockTime;
+    }
+
+    /**
+     * Setter for the lock time. Remember that in couchbase now there
+     * is a maximum limit of 30 seconds.
+     * @param lockTime The new time to use in couchbase
+     */
+    public void setLockTime(int lockTime) {
+        this.lockTime = lockTime;
+    }
+
+    /**
+     * Getter for the time without saving.
+     * @return The time to maintain sessions without saving (ms).
+     */
+    public long getMaxAccessTimeNotSaving() {
+        return maxAccessTimeNotSaving;
+    }
+
+    /**
+     * Setter for the time without saving.
+     * @param maxAccessTimeNotSaving The new time in ms.
+     */
+    public void setMaxAccessTimeNotSaving(long maxAccessTimeNotSaving) {
+        this.maxAccessTimeNotSaving = maxAccessTimeNotSaving;
     }
     
     //
@@ -459,7 +527,6 @@ public class CouchbaseManager extends StandardManager {
         log.fine("CouchbaseManager.init: init");
         super.init();
         try {
-            // TODO: add parameters to URLs, bucketname, username and password
             // start the memcached client
             ArrayList baseURIs = new ArrayList();
             String[] uris = this.url.split(",");
@@ -557,7 +624,7 @@ public class CouchbaseManager extends StandardManager {
         try {
             OperationFuture<CASValue<Object>> future;
             if (expected.isLocked()) {
-                future = client.asyncGetAndLock(id, 30); // TODO: add configurable timeout
+                future = client.asyncGetAndLock(id, this.lockTime);
             } else {
                 future = client.asyncGets(id);
             }
@@ -567,7 +634,11 @@ public class CouchbaseManager extends StandardManager {
                 result.setCas(future.get().getCas());
                 result.setSession(session);
                 result.setMemStatus(expected);
-            } else if (future.getStatus().getMessage().equals("NOT_FOUND")) {
+            } else if (future.getStatus().getMessage().equals("NOT_FOUND") ||
+                    future.getStatus().getMessage().equals("Not found")) {
+                // TODO: I don't know why sometimes "NOT_FOUND" and "Not Found"
+                //       is returned. Maybe I should try to check the result 
+                //       better or using other way.
                 log.fine("NOT_FOUND => session doesn't exist in the repo");
                 result.setCas(-1);
                 result.setMemStatus(SessionMemStatus.NOT_EXISTS);
@@ -600,11 +671,18 @@ public class CouchbaseManager extends StandardManager {
         log.log(Level.FINE, "CouchbaseManager.doSessionSave(MemWrapperSession): init {0}", session);
         // save the session inside reposiroty
         try {
-            CASResponse res = client.cas(session.getId(), session.getCas(),
-                    this.getMaxInactiveInterval(), session, 
-                    new DefaultConnectionFactory().getDefaultTranscoder()); // TODO: set a transcoder via configuration
-            if (!CASResponse.OK.equals(res)) {
-                log.log(Level.SEVERE, "Error saving in the repo. Return is not OK {0}", res);
+            if (isSticky()) {
+                OperationFuture<Boolean> res = client.set(session.getId(), this.getMaxInactiveInterval(), session);
+                if (!res.get()) {
+                    log.log(Level.SEVERE, "Error saving in the repo. Return is not OK {0}", res);
+                }
+            } else {
+                CASResponse res = client.cas(session.getId(), session.getCas(),
+                        this.getMaxInactiveInterval(), session,
+                        new DefaultConnectionFactory().getDefaultTranscoder()); // TODO: set a transcoder via configuration
+                if (!CASResponse.OK.equals(res)) {
+                    log.log(Level.SEVERE, "Error saving in the repo. Return is not OK {0}", res);
+                }
             }
         } catch (Exception e) {
             log.log(Level.SEVERE, "Error saving in the repo", e);
@@ -621,7 +699,7 @@ public class CouchbaseManager extends StandardManager {
         log.log(Level.FINE, "CouchbaseManager.doSessionDelete(MemWrapperSession): init {0}", session);
         boolean deleted = false;
         try {
-            if (session.isLocked()) {
+            if (session.isLocked() && !this.isSticky()) {
                 // TODO: cannot be deleted if locked (why????)
                 doSessionUnlock(session.getId(), session.getCas());
             }
@@ -728,7 +806,8 @@ public class CouchbaseManager extends StandardManager {
             }
         }
         long timeEnd = System.currentTimeMillis();
-        log.log(Level.FINE, "CouchbaseManager.processExpires(): exit {0} ms", (timeEnd - timeNow));
+        log.log(Level.FINE, "CouchbaseManager.processExpires(): exit. {0} sessions processed in {1} ms", 
+                new Object[] {current.length, (timeEnd - timeNow)});
     }
     
 }

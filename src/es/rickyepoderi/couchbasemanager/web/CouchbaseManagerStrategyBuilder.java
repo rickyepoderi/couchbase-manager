@@ -39,12 +39,23 @@ import org.jvnet.hk2.annotations.Service;
  * can be used right now:</p>
  * 
  * <ul>
- *   <li>repositoryUrl: The list of URIs of the couchbase servers, it is
+ *   <li>repositoryUrl: The list of URIs of the couchbase servers, it is a
  *       comma separated list. For example "http://server1:8091/pools,http://server2:8091/pools".
  *       Default: "http://localhost:8091/pools".</li>
  *   <li>repositoryBucket: Repository bucket to use in couchbase. Default: "default".</li>
  *   <li>repositoryUsername: Repository admin username to use in the bucket. Default no user.</li>
  *   <li>repositoryPassword: Repository admin password. Default no password.</li>
+ *   <li>sticky: Change the manager to be sticky. Sticky works very different,
+ *       session is not locked in couchbase and it is not reload every request.
+ *       Default false.</li>
+ *   <li>lockTime: The amount of time in seconds that a key will be locked 
+ *       inside couchbase manager without being released. In current couchbase 
+ *       implementation the maximum locktime is 30 seconds. Default 30.</li>
+ *   <li>maxTimeNotSaving: The maximum amount of time in minutes that a 
+ *       session can only be refreshed without a real saving in couchbase.
+ *       when only accessed a session is touched in couchbase, therefore 
+ *       internal timestamps are not saved. This property sets a maximum
+ *       time, in order to force a save. Default 5.</li>
  * </ul>
  * 
  * <p>Example of configuration:</p>
@@ -92,6 +103,27 @@ public class CouchbaseManagerStrategyBuilder extends BasePersistenceStrategyBuil
      */
     public static final String PROP_REPOSITORY_PASSWORD = "repositoryPassword";
     
+    /**
+     * Property to set the stickyness of the setup.
+     */
+    public static final String PROP_STICKY = "sticky";
+    
+    /**
+     * Property that handles the amount of time in seconds to lock a key
+     * inside getAndLock method (couchbase time has to be less or equal to 30s).
+     */
+    public static final String PROP_LOCK_TIME = "lockTime";
+    
+    /**
+     * Property that handles the amount of time a sessions could be refreshed
+     * (touched in couchbase) without saving. In normal manager configuration
+     * the session is only touched when no modifications are performed in the
+     * attributes of the session. That means the session timestamps are not
+     * updated inside couchbase. This property assures a saving if session
+     * was not updated in this time.
+     */
+    public static final String PROP_MAX_ACCESS_TIME_NOT_SAVING = "maxTimeNotSaving";
+    
     //
     // DEFAULT VALUES FOR PROPERTIES
     //
@@ -111,10 +143,25 @@ public class CouchbaseManagerStrategyBuilder extends BasePersistenceStrategyBuil
      */
     protected static final String DEFAULT_REPOSITORY_USERNAME = null;
     
-     /**
+    /**
      * Default value for repositoryPassword property.
      */
     protected static final String DEFAULT_REPOSITORY_PASSWORD = "";
+    
+    /**
+     * Default value for stickyness (false).
+     */
+    protected static final boolean DEFAULT_STICKY = false;
+    
+    /**
+     * Default lock time (maximum in couchbase 30s).
+     */
+    protected static final int DEFAULT_LOCK_TIME = 30;
+    
+    /**
+     * Default max time without saving in couchbase (5 minutes).
+     */
+    protected static final int DEFAULT_MAX_ACCESS_TIME_NOT_SAVING = 5;
     
     //
     // REAL PROPERTIES
@@ -141,6 +188,21 @@ public class CouchbaseManagerStrategyBuilder extends BasePersistenceStrategyBuil
     protected String repositoryPassword = DEFAULT_REPOSITORY_PASSWORD;
     
     /**
+     * property for stickyness.
+     */
+    protected boolean sticky = DEFAULT_STICKY;
+    
+    /**
+     * property to manage the lock time.
+     */
+    protected int lockTime = DEFAULT_LOCK_TIME;
+    
+    /**
+     * property to manage the max time without saving in couchbase.
+     */
+    protected int maxAccessTimeNotSaving = DEFAULT_MAX_ACCESS_TIME_NOT_SAVING;
+    
+    /**
      * Main method that creates the manager and sets it to the context of the 
      * application. The properties are read from the glassfish-web.xml and
      * the manager is created and assign to the context.
@@ -160,6 +222,10 @@ public class CouchbaseManagerStrategyBuilder extends BasePersistenceStrategyBuil
         manager.setBucket(repositoryBucket);
         manager.setUsername(repositoryUsername);
         manager.setPassword(repositoryPassword);
+        manager.setSticky(sticky);
+        manager.setLockTime(lockTime);
+        // in configuration is in minutes but in manager in ms
+        manager.setMaxAccessTimeNotSaving(maxAccessTimeNotSaving * 60000L);
         // TODO: set more values
         StandardContext sctx = (StandardContext) ctx;
         if (!sctx.isSessionTimeoutOveridden()) {
@@ -210,6 +276,31 @@ public class CouchbaseManagerStrategyBuilder extends BasePersistenceStrategyBuil
                     } else if (name.equalsIgnoreCase(PROP_REPOSITORY_PASSWORD)) {
                         log.log(Level.FINE, "repositoryPassword: {0}", value);
                         repositoryPassword = value;
+                    } else if (name.equalsIgnoreCase(PROP_STICKY)) {
+                        log.log(Level.FINE, "sticky: {0}", value);
+                        sticky = Boolean.parseBoolean(value);
+                    } else if (name.equalsIgnoreCase(PROP_LOCK_TIME)) {
+                        log.log(Level.FINE, "lockTime: {0}", value);
+                        try {
+                            lockTime = Integer.parseInt(value);
+                            if (lockTime <= 0) {
+                                log.log(Level.WARNING, "Invalid integer format for lockTime {0}", value);
+                                lockTime = DEFAULT_LOCK_TIME;
+                            }
+                        } catch (NumberFormatException e) {
+                            log.log(Level.WARNING, "Invalid integer format for lockTime {0}", value);
+                        }
+                    }  else if (name.equalsIgnoreCase(PROP_MAX_ACCESS_TIME_NOT_SAVING)) {
+                        log.log(Level.FINE, "maxAccessTimeNotSaving: {0}", value);
+                        try {
+                            maxAccessTimeNotSaving = Integer.parseInt(value);
+                            if (maxAccessTimeNotSaving < 0) {
+                                log.log(Level.WARNING, "Invalid integer format for maxAccessTimeNotSaving {0}", value);
+                                maxAccessTimeNotSaving = DEFAULT_MAX_ACCESS_TIME_NOT_SAVING;
+                            }
+                        } catch (NumberFormatException e) {
+                            log.log(Level.WARNING, "Invalid integer format for maxAccessTimeNotSaving {0}", value);
+                        }
                     }
                 }
             }

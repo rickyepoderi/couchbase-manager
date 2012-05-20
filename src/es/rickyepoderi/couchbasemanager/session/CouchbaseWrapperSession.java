@@ -14,15 +14,16 @@ import org.apache.catalina.session.StandardSession;
  * <p>The CouchbaseWrapperSession is a extension of the StandardSession but with
  * to main differences in behaviour: session is only expired when expired in
  * the external repo (session does not exist in couchbase server) and session
- * contents are only valid when locked (locking is also done in couchbase). 
- * So two ideas are the bases of the class:
+ * contents are only valid when locked if non-sticky (locking is also done in couchbase). 
+ * So two ideas are the bases of the class:</p>
  * 
  * <ul>
- * <li>lockForeground and lockBackGround methods
+ * <li>lockForeground and lockBackground when non-sticky methods
  * perform a real locking in couchbase (no other server will modify the
  * session). When the session is released (unlock methods) session is saved
  * in the repository (saved and unlocked if dirty, only touched and unlocked
- * if only accessed).</li>
+ * if only accessed). In sticky no lock/unlock is done in couchbase and session
+ * is not read again and only saved/touched at unlock.</li>
  * <li>Expiration is managed locally (to save external calls) but real 
  * expiration occurs when the session disappears from the repository.
  * Expiration is also managed by couchbase.</li>
@@ -43,9 +44,12 @@ import org.apache.catalina.session.StandardSession;
  *   <li>NOT_EXISTS: Session was tried to be read from the server but it
  *       does not exist (expired or deleted by another server). this
  *       situation must be true to be expired.</li>
- *   <li>BLOCKED: Session was tried to be read but it was blocked by
- *       another server. the lock* methods returns false and lock has to
- *       be tried again.</lI>
+ *   <li>FOREGROUND_LOCK: Blocked by lockForeground method, in non-sticky
+ *       the session is blocked in couchbase.</li>
+ *   <li>BACKGROUND_LOCK: Blocked by lockBackground method, in non-sticky
+ *       the session is blocked in couchbase</li>
+ *   <li>ALREADY_LOCKED: The session was tried to be locked (couchnase) but
+ *       it was already locked by another server.</li>
  *   <li>ERROR: Some error loading the session (unknown state).</li>
  *   </ul>
  * </li>
@@ -114,12 +118,6 @@ public class CouchbaseWrapperSession extends StandardSession {
      * logger for the class
      */
     protected static final Logger log = Logger.getLogger(CouchbaseWrapperSession.class.getName());
-    
-    /**
-     * Maximum time to not save session if it is only accessed.
-     */
-    private static final long MAX_ACCESS_TIME_NOT_SAVING = 300000L;
-    // TODO: Make this configurable????
     
     /**
      * CAS for the session (normal CAS read from couchbase or special negative meanings).
@@ -229,11 +227,14 @@ public class CouchbaseWrapperSession extends StandardSession {
      * marked as NOT_LOADED.
      */
     synchronized protected void clear() {
-        this.attributes.clear();
+        if (!((CouchbaseManager)manager).isSticky()) {
+            // only clear if non-sticky
+            this.attributes.clear();
+            this.repoAccessedTime = -1;
+        }
         this.cas = -1;
         this.mstatus = SessionMemStatus.NOT_LOADED;
         this.astatus = SessionAccessStatus.CLEAN;
-        this.repoAccessedTime = -1;
     }
     
     /**
@@ -253,10 +254,14 @@ public class CouchbaseWrapperSession extends StandardSession {
         if (loaded.lastAccessedTime > this.lastAccessedTime) {
             this.lastAccessedTime = loaded.lastAccessedTime;
         }
-        if (result.getMemStatus().isLocked()) {
+        if (result.getMemStatus().isLocked() || 
+                ((CouchbaseManager) manager).isSticky()) {
             this.attributes = loaded.attributes;
         }
         this.repoAccessedTime = loaded.thisAccessedTime;
+        if (this.astatus == null) {
+            this.astatus = SessionAccessStatus.CLEAN;
+        }
         this.mstatus = result.getMemStatus();
         this.cas = result.getCas();
     }
@@ -273,17 +278,23 @@ public class CouchbaseWrapperSession extends StandardSession {
      */
     synchronized protected final void doSave() {
         if (this.isLocked()) {
+            log.log(Level.FINE, "CouchbaseWrapperSession.doSave(): init {0} {1}", 
+                    new Object[] {this.astatus, this.thisAccessedTime - this.repoAccessedTime});
             if (SessionAccessStatus.DIRTY.equals(this.astatus) ||
                     (SessionAccessStatus.ACCESSED.equals(this.astatus) && 
-                    (this.thisAccessedTime - this.repoAccessedTime > MAX_ACCESS_TIME_NOT_SAVING))) {
+                    (this.thisAccessedTime - this.repoAccessedTime >= ((CouchbaseManager) manager).getMaxAccessTimeNotSaving()))) {
                 // session saved if modified or long time not accessed
                 ((CouchbaseManager) manager).doSessionSave(this);
-                this.astatus = SessionAccessStatus.CLEAN;
+                // set the repoAccessedTime to the one saved one
+                // it is only used when sticky otherwise it is set in load/fill
+                this.repoAccessedTime = this.thisAccessedTime;
             } else {
                 if (SessionAccessStatus.ACCESSED.equals(this.astatus)) {
                     ((CouchbaseManager) manager).doSessionTouch(this.id);
                 }
-                ((CouchbaseManager) manager).doSessionUnlock(this.id, this.cas);
+                if (!((CouchbaseManager) manager).isSticky()) {
+                    ((CouchbaseManager) manager).doSessionUnlock(this.id, this.cas);
+                }
             }
         }
         this.clear();
@@ -354,19 +365,22 @@ public class CouchbaseWrapperSession extends StandardSession {
                 return false;
             }
             if (!isLocked()) {
-                // session is first locked => load with background lock
-                doLoad(SessionMemStatus.BACKGROUND_LOCK);
-                if (SessionMemStatus.ALREADY_LOCKED.equals(this.mstatus) ||
-                    SessionMemStatus.ERROR.equals(this.mstatus)) {
-                    // if blocked or error at reading try again
-                    // if not found or ok blocking can be done
-                    // not found means the session is expired but 
-                    // it can be blocked anyways
-                    return false;
+                if (!((CouchbaseManager) manager).isSticky()) {
+                    // session is first locked => load with background lock
+                    doLoad(SessionMemStatus.BACKGROUND_LOCK);
+                    if (SessionMemStatus.ALREADY_LOCKED.equals(this.mstatus)
+                            || SessionMemStatus.ERROR.equals(this.mstatus)) {
+                        // if blocked or error at reading try again
+                        // if not found or ok blocking can be done
+                        // not found means the session is expired but 
+                        // it can be blocked anyways
+                        return false;
+                    }
+                } else {
+                    this.mstatus = SessionMemStatus.BACKGROUND_LOCK;
                 }
             }
             // the sesison id loaded and locked => mark and return
-            //this.mstatus = SessionMemStatus.BACKGROUND_LOCK;
             this.numForegroundLocks = 0;
             return true;
         }
@@ -388,19 +402,22 @@ public class CouchbaseWrapperSession extends StandardSession {
                 return false;
             }
             if (!isLocked()) {
-                // session is first locked => load with lock
-                doLoad(SessionMemStatus.FOREGROUND_LOCK);
-                if (SessionMemStatus.ALREADY_LOCKED.equals(this.mstatus) ||
-                    SessionMemStatus.ERROR.equals(this.mstatus)) {
-                    // if blocked or error at reading try again
-                    // if not found or ok blocking can be done
-                    // not found means the session is expired but 
-                    // it can be blocked anyways
-                    return false;
+                if (!((CouchbaseManager) manager).isSticky()) {
+                    // session is first locked => load with lock
+                    doLoad(SessionMemStatus.FOREGROUND_LOCK);
+                    if (SessionMemStatus.ALREADY_LOCKED.equals(this.mstatus)
+                            || SessionMemStatus.ERROR.equals(this.mstatus)) {
+                        // if blocked or error at reading try again
+                        // if not found or ok blocking can be done
+                        // not found means the session is expired but 
+                        // it can be blocked anyways
+                        return false;
+                    }
+                } else {
+                    this.mstatus = SessionMemStatus.FOREGROUND_LOCK;
                 }
             }
             // the sesison id loaded and locked => mark and return
-            //this.mstatus = SessionMemStatus.FOREGROUND_LOCK;
             this.numForegroundLocks++;
             return true;
         }
@@ -423,7 +440,6 @@ public class CouchbaseWrapperSession extends StandardSession {
                 // save the session
                 doSave();
                 // free the lock
-                //this.mstatus = SessionMemStatus.NOT_LOADED;
                 this.numForegroundLocks = 0;
             }
         }
@@ -450,7 +466,6 @@ public class CouchbaseWrapperSession extends StandardSession {
                     // save the session
                     doSave();
                     // free the lock
-                    //this.mstatus = SessionMemStatus.NOT_LOADED;
                 }
             }
         }
@@ -474,7 +489,6 @@ public class CouchbaseWrapperSession extends StandardSession {
                 // save the session
                 doSave();
                 // free the lock
-                //this.mstatus = SessionMemStatus.NOT_LOADED;
                 this.numForegroundLocks = 0;
             }
         }
@@ -524,10 +538,11 @@ public class CouchbaseWrapperSession extends StandardSession {
      */
     @Override
     public boolean hasExpired() {
+        log.fine("CouchbaseWrapperSession.hasExpired(): init");
         boolean expired;
         synchronized (this) {
-            if (isLocked()) {
-                // session is currently locked => not expired
+            if (isLocked() && !((CouchbaseManager)manager).isSticky()) {
+                // session is currently locked in non-sticky => not expired
                 expired = false;
             } else if (SessionMemStatus.NOT_EXISTS.equals(this.mstatus)) {
                 // session is NOT_EXISTS => expired
@@ -546,6 +561,7 @@ public class CouchbaseWrapperSession extends StandardSession {
                 }
             }
         }
+        log.log(Level.FINE, "CouchbaseWrapperSession.hasExpired(): exit {0}", expired);
         return expired;
     }
 
