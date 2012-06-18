@@ -4,6 +4,11 @@
  */
 package es.rickyepoderi.couchbasemanager.session;
 
+import com.sun.web.security.RealmAdapter;
+import es.rickyepoderi.couchbasemanager.couchbase.ClientData;
+import es.rickyepoderi.couchbasemanager.couchbase.ClientRequest;
+import es.rickyepoderi.couchbasemanager.couchbase.ClientResult;
+import java.security.Principal;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import org.apache.catalina.Manager;
@@ -50,7 +55,9 @@ import org.apache.catalina.session.StandardSession;
  *       the session is blocked in couchbase</li>
  *   <li>ALREADY_LOCKED: The session was tried to be locked (couchnase) but
  *       it was already locked by another server.</li>
- *   <li>ERROR: Some error loading the session (unknown state).</li>
+ *   <li>ERROR: Some error loading the session (unknown state). This state
+ *       is used to mark a re-read from couchbase, it is used when errors
+ *       founds (background save/touch produces an error to be omitted).</li>
  *   </ul>
  * </li>
  * <li>The activity or accessed status. This status is the one check in order
@@ -66,7 +73,8 @@ import org.apache.catalina.session.StandardSession;
  * 
  * @author ricky
  */
-public class CouchbaseWrapperSession extends StandardSession {
+public class CouchbaseWrapperSession extends StandardSession 
+  implements ClientData {
     
     /**
      * Enum class that represents all the status the session can have
@@ -120,6 +128,15 @@ public class CouchbaseWrapperSession extends StandardSession {
     protected static final Logger log = Logger.getLogger(CouchbaseWrapperSession.class.getName());
     
     /**
+     * Glassfish declared the principal as transient, so the principal
+     * is lost when serializing/de-serializing the session. Store the username
+     * here as it does in 
+     * <a href="http://java.net/projects/glassfish/sources/svn/content/trunk/main/appserver/web/web-ha/src/main/java/org/glassfish/web/ha/session/management/ReplicationAttributeStore.java">ReplicationAttributeStore</a>
+     * 
+     */
+    protected String username = null;
+    
+    /**
      * CAS for the session (normal CAS read from couchbase or special negative meanings).
      */
     protected transient long cas = -1;
@@ -145,6 +162,12 @@ public class CouchbaseWrapperSession extends StandardSession {
      */
     protected transient long repoAccessedTime = -1;
     
+    /**
+     * Request that is being processed. The request that is processed in the
+     * background is stored here to wait in case another operation comes.
+     */
+    protected transient ClientRequest req = null;
+    
     //
     // CONSTRUCTORS
     //
@@ -162,6 +185,22 @@ public class CouchbaseWrapperSession extends StandardSession {
         this.astatus = SessionAccessStatus.DIRTY;
         this.numForegroundLocks = 0;
         log.log(Level.FINE, "CouchbaseWrapperSession.constructor(Manager): init {0}", manager);
+    }
+    
+    /**
+     * Fake constructor. It is used cos when finding a session in couchbase a
+     * session should be provided. This method is a fake and shouldn't be used
+     * when a real session is created. This method DO NOT add the session
+     * to the session map in the manager. That is the reason to be protected.
+     * @param manager The manager of the session
+     * @param id The id of the session to look for in couchbase
+     */
+    protected CouchbaseWrapperSession(Manager manager, String id) {
+        this(manager);
+        // not using setId cos it adds the session to the manager
+        this.id = id;
+        // force re-read
+        this.mstatus = SessionMemStatus.ERROR;
     }
     
     //
@@ -204,7 +243,7 @@ public class CouchbaseWrapperSession extends StandardSession {
      * Get the access or activity status.
      * @return The access status
      */
-    public SessionAccessStatus getAstatus() {
+    public SessionAccessStatus getAccesStatus() {
         return astatus;
     }
 
@@ -212,8 +251,37 @@ public class CouchbaseWrapperSession extends StandardSession {
      * Set a new access status
      * @param astatus The new status
      */
-    public void setAstatus(SessionAccessStatus astatus) {
+    public void setAccessStatus(SessionAccessStatus astatus) {
         this.astatus = astatus;
+    }
+    
+    public ClientRequest getClientRequest() {
+        return this.req;
+    }
+    
+    /**
+     * Clears the request and the attributes if session is non-sticky. If the
+     * operation was an error the session is marked to ERROR and the next
+     * time session is re-read (no matter sticky or non-sticky). This method
+     * is called after an async save, touch or delete.
+     * Finally the notifyAll of the session is called to continue if some
+     * other thread was waiting.
+     * @param res The result of the operation in the background
+     */
+    synchronized public void clearRequestAndNotify(ClientResult res) {
+        log.log(Level.FINE, "CouchbaseWrapperSession.clearRequest(): init/exit {0}", res);
+        // clear attributes if non-sticky
+        if (!((CouchbaseManager)manager).isSticky()) {
+            this.attributes.clear();
+        }
+        // set to error if some error has ocurred
+        if (!res.isSuccess()) {
+            log.log(Level.SEVERE, "Error in the background operation. Marking the session to ERROR", 
+                    new IllegalStateException(res.getStatus().getMessage(), res.getException()));
+            setMemStatus(SessionMemStatus.ERROR);
+        }
+        this.req = null;
+        this.notifyAll();
     }
     
     //
@@ -223,47 +291,64 @@ public class CouchbaseWrapperSession extends StandardSession {
     //
     
     /**
-     * Clear the session. That means the attributes are removed and status
-     * marked as NOT_LOADED.
+     * Clear the session. That means the transient vars are cleared to the
+     * next request-
      */
     synchronized protected void clear() {
         if (!((CouchbaseManager)manager).isSticky()) {
             // only clear if non-sticky
-            this.attributes.clear();
             this.repoAccessedTime = -1;
         }
         this.cas = -1;
-        this.mstatus = SessionMemStatus.NOT_LOADED;
+        setMemStatus(SessionMemStatus.NOT_LOADED);
         this.astatus = SessionAccessStatus.CLEAN;
     }
     
     /**
      * Fill the session with a couchbase read session. Attributes are
      * refilled, access time and last access time are refreshed. CAS is
-     * retieved from the couchbase session. If the session is not locked
+     * retrieved from the couchbase session. If the session is not locked
      * only access data is refreshed (access time and so on).
      * 
-     * @param result The result session that has been read from couchbase
-     *               The result is assured OK
+     * @param loaded The loaded session from couchbase
+     * @param status The status of the session
+     * @param cas The cas read
      */
-    synchronized protected void fill(SessionLoadResult result) {
-        CouchbaseWrapperSession loaded = result.getSession();
+    synchronized protected void fill(CouchbaseWrapperSession loaded, SessionMemStatus status, long cas) {
+        // set the fixed parts
+        this.setSipApplicationSessionId(loaded.getSipApplicationSessionId());
+        this.setBeKey(loaded.getBeKey());
+        this.creationTime = loaded.creationTime;
+        this.maxInactiveInterval = loaded.maxInactiveInterval;
+        this.isNew = loaded.isNew;
+        this.isValid = loaded.isValid;
+        this.version = loaded.version;
+        this.ssoId = loaded.ssoId;
+        if (loaded.username != null && 
+                (this.principal == null || !loaded.username.equals(this.principal.getName()))){
+            // add the principal if the loaded session has one and 
+            // current one is empty or different
+            log.log(Level.FINE, "CouchbaseWrapperSession.fill(): username={0}", loaded.username);
+            Principal p = ((RealmAdapter) this.manager.getContainer().getRealm())
+                    .createFailOveredPrincipal(loaded.username);
+            this.setPrincipal(p);
+        }
+        // the repo access time is set to the read one
+        this.repoAccessedTime = loaded.thisAccessedTime;
+        // set accessed time only if greater
         if (loaded.thisAccessedTime > this.thisAccessedTime) {
             this.thisAccessedTime = loaded.thisAccessedTime;
         }
         if (loaded.lastAccessedTime > this.lastAccessedTime) {
             this.lastAccessedTime = loaded.lastAccessedTime;
         }
-        if (result.getMemStatus().isLocked() || 
-                ((CouchbaseManager) manager).isSticky()) {
+        // attributes are loaded only if sticky or non-sticky but locked
+        if (status.isLocked() || ((CouchbaseManager) manager).isSticky()) {
             this.attributes = loaded.attributes;
         }
-        this.repoAccessedTime = loaded.thisAccessedTime;
-        if (this.astatus == null) {
-            this.astatus = SessionAccessStatus.CLEAN;
-        }
-        this.mstatus = result.getMemStatus();
-        this.cas = result.getCas();
+        // set new mstatus and cas
+        setMemStatus(status);
+        this.cas = cas;
     }
     
     /**
@@ -276,7 +361,7 @@ public class CouchbaseWrapperSession extends StandardSession {
      * TODO: if not dirty but accessed two methods are executed (touch and
      * unlock) cos couchbase client has not touchAndUnlock.
      */
-    synchronized protected final void doSave() {
+    synchronized protected void doSave() {
         if (this.isLocked()) {
             log.log(Level.FINE, "CouchbaseWrapperSession.doSave(): init {0} {1}", 
                     new Object[] {this.astatus, this.thisAccessedTime - this.repoAccessedTime});
@@ -284,19 +369,32 @@ public class CouchbaseWrapperSession extends StandardSession {
                     (SessionAccessStatus.ACCESSED.equals(this.astatus) && 
                     (this.thisAccessedTime - this.repoAccessedTime >= ((CouchbaseManager) manager).getMaxAccessTimeNotSaving()))) {
                 // session saved if modified or long time not accessed
-                ((CouchbaseManager) manager).doSessionSave(this);
+                req = ((CouchbaseManager) manager).doSessionSave(this,
+                        new OperationComplete(this));
                 // set the repoAccessedTime to the one saved one
                 // it is only used when sticky otherwise it is set in load/fill
                 this.repoAccessedTime = this.thisAccessedTime;
             } else {
-                if (SessionAccessStatus.ACCESSED.equals(this.astatus)) {
-                    ((CouchbaseManager) manager).doSessionTouch(this.id);
-                }
-                if (!((CouchbaseManager) manager).isSticky()) {
-                    ((CouchbaseManager) manager).doSessionUnlock(this.id, this.cas);
+                if (((CouchbaseManager) manager).isSticky()) {
+                    // sticky configuration just touch if accessed
+                    if (SessionAccessStatus.ACCESSED.equals(this.astatus)) {
+                        req = ((CouchbaseManager) manager).doSessionTouch(this,
+                                new OperationComplete(this));
+                    }
+                } else {
+                    // non-sticky, touch if accessed and always unlock
+                    // TODO: why not and unlockAndTouch or touchAndUnlock
+                    if (SessionAccessStatus.ACCESSED.equals(this.astatus)) {
+                        ((CouchbaseManager) manager).doSessionTouch(this, null);
+                    }
+                    if (!((CouchbaseManager) manager).isSticky()) {
+                        req = ((CouchbaseManager) manager).doSessionUnlock(this,
+                                new OperationComplete(this));
+                    }
                 }
             }
         }
+        // clear transient vars
         this.clear();
     }
     
@@ -308,15 +406,27 @@ public class CouchbaseWrapperSession extends StandardSession {
      * 
      * @param expected The expected status (both locks or not load)
      */
-    synchronized protected final void doLoad(SessionMemStatus expected) {
-        SessionLoadResult result = ((CouchbaseManager) manager).doSessionLoad(id, expected);
-        if (result.getMemStatus().isSuccess()) {
-            // load data and new cas
-            fill(result);
-        } else {
-            // no session read => set state
-            this.cas = -1;
-            this.mstatus = result.getMemStatus();
+    synchronized protected void doLoad(SessionMemStatus expected) {
+        ((CouchbaseManager) manager).doSessionLoad(this, expected);
+    }
+    
+    /**
+     * Method that waits for a previous request to complete. Cos now save/touch
+     * methods are asynchronously executed when accessing again to couchbase
+     * a previous operation can be still running. This methods waits patiently
+     * the operation to finish.
+     */
+    synchronized protected void waitOnExecution() {
+        while (req != null) {
+            try {
+                log.fine("CouchbaseManager.waitOnExecution(): waiting execution");
+                // wait for the execution to finish
+                this.wait();
+            } catch (Exception e) {
+                // here it doesn't matter if some exception happens 
+                // (Interrupted, NullPointer or whatever) cos the req is
+                // rechecked til finish or null.
+            }
         }
     }
     
@@ -328,7 +438,7 @@ public class CouchbaseWrapperSession extends StandardSession {
      * Check if the session has any kind of locking.
      * @return true if a foreground or background lock exists.
      */
-    public boolean isLocked() {
+    synchronized public boolean isLocked() {
         return this.mstatus.isLocked();
     }
     
@@ -337,7 +447,7 @@ public class CouchbaseWrapperSession extends StandardSession {
      * @return true if the session has a lock and it is foreground
      */
     @Override
-    public boolean isForegroundLocked() {
+    synchronized public boolean isForegroundLocked() {
         return SessionMemStatus.FOREGROUND_LOCK.equals(this.mstatus);
     }
     
@@ -345,7 +455,7 @@ public class CouchbaseWrapperSession extends StandardSession {
      * Check if the session is background locked.
      * @return true if the session is locked and the lock is background.
      */
-    public boolean isBackgroundLocked() {
+    synchronized public boolean isBackgroundLocked() {
         return SessionMemStatus.BACKGROUND_LOCK.equals(this.mstatus);
     }    
     
@@ -357,33 +467,28 @@ public class CouchbaseWrapperSession extends StandardSession {
      * @return true if the session was correctly locked in couchbase.
      */
     @Override
-    public boolean lockBackground() {
+    synchronized public boolean lockBackground() {
         log.fine("CouchbaseWrapperSession.lockBackground(): init");
-        synchronized (this) {
-            if (isForegroundLocked()) {
-                // the session is foreground locked => false
+        if (isForegroundLocked()) {
+            // the session is foreground locked => false
+            return false;
+        }
+        if (!isLocked()) {
+            // session is first locked => load with background lock
+            doLoad(SessionMemStatus.BACKGROUND_LOCK);
+            if (SessionMemStatus.ALREADY_LOCKED.equals(this.mstatus)
+                    || SessionMemStatus.ERROR.equals(this.mstatus)) {
+                // if blocked or error at reading try again
+                // if not found or ok blocking can be done
+                // not found means the session is expired but 
+                // it can be blocked anyways
                 return false;
             }
-            if (!isLocked()) {
-                if (!((CouchbaseManager) manager).isSticky()) {
-                    // session is first locked => load with background lock
-                    doLoad(SessionMemStatus.BACKGROUND_LOCK);
-                    if (SessionMemStatus.ALREADY_LOCKED.equals(this.mstatus)
-                            || SessionMemStatus.ERROR.equals(this.mstatus)) {
-                        // if blocked or error at reading try again
-                        // if not found or ok blocking can be done
-                        // not found means the session is expired but 
-                        // it can be blocked anyways
-                        return false;
-                    }
-                } else {
-                    this.mstatus = SessionMemStatus.BACKGROUND_LOCK;
-                }
-            }
-            // the sesison id loaded and locked => mark and return
-            this.numForegroundLocks = 0;
-            return true;
         }
+        // the sesison id loaded and locked => mark and return
+        this.numForegroundLocks = 0;
+        log.fine("CouchbaseWrapperSession.lockBackground(): exit");
+        return true;
     }
 
     /**
@@ -394,33 +499,28 @@ public class CouchbaseWrapperSession extends StandardSession {
      * @return true if the session was correctly locked in couchbase.
      */
     @Override
-    public boolean lockForeground() {
+    synchronized public boolean lockForeground() {
         log.fine("CouchbaseWrapperSession.lockForeground(): init");
-        synchronized (this) {
-            if (isBackgroundLocked()) {
-                // is background locked => return false
+        if (isBackgroundLocked()) {
+            // is background locked => return false
+            return false;
+        }
+        if (!isLocked()) {
+            // session is first locked => load with lock
+            doLoad(SessionMemStatus.FOREGROUND_LOCK);
+            if (SessionMemStatus.ALREADY_LOCKED.equals(this.mstatus)
+                    || SessionMemStatus.ERROR.equals(this.mstatus)) {
+                // if blocked or error at reading try again
+                // if not found or ok blocking can be done
+                // not found means the session is expired but 
+                // it can be blocked anyways
                 return false;
             }
-            if (!isLocked()) {
-                if (!((CouchbaseManager) manager).isSticky()) {
-                    // session is first locked => load with lock
-                    doLoad(SessionMemStatus.FOREGROUND_LOCK);
-                    if (SessionMemStatus.ALREADY_LOCKED.equals(this.mstatus)
-                            || SessionMemStatus.ERROR.equals(this.mstatus)) {
-                        // if blocked or error at reading try again
-                        // if not found or ok blocking can be done
-                        // not found means the session is expired but 
-                        // it can be blocked anyways
-                        return false;
-                    }
-                } else {
-                    this.mstatus = SessionMemStatus.FOREGROUND_LOCK;
-                }
-            }
-            // the sesison id loaded and locked => mark and return
-            this.numForegroundLocks++;
-            return true;
         }
+        // the sesison id loaded and locked => mark and return
+        this.numForegroundLocks++;
+        log.log(Level.FINE, "CouchbaseWrapperSession.lockForeground(): exit {0}", numForegroundLocks);
+        return true;
     }
 
     /**
@@ -429,20 +529,19 @@ public class CouchbaseWrapperSession extends StandardSession {
      * just touched, it depends in access status).
      */
     @Override
-    public void unlockBackground() {
+    synchronized public void unlockBackground() {
         log.fine("CouchbaseWrapperSession.unlockBackground(): init");
-        synchronized (this) {
-            if (!isLocked()) {
-                // not locked => just return
-                return;
-            }
-            if (isBackgroundLocked()) {
-                // save the session
-                doSave();
-                // free the lock
-                this.numForegroundLocks = 0;
-            }
+        if (!isLocked()) {
+            // not locked => just return
+            return;
         }
+        if (isBackgroundLocked()) {
+            // save the session
+            doSave();
+            // free the lock
+            this.numForegroundLocks = 0;
+        }
+        log.fine("CouchbaseWrapperSession.unlockBackground(): exit");
     }
 
     /**
@@ -451,24 +550,23 @@ public class CouchbaseWrapperSession extends StandardSession {
      * just touched, it depends in access status).
      */
     @Override
-    public void unlockForeground() {
+    synchronized public void unlockForeground() {
         log.fine("CouchbaseWrapperSession.unlockForeground(): init");
         //in this case we are not using locks so just return true
-        synchronized (this) {
-            if (!isLocked()) {
-                // not locked => just return
-                return;
-            }
-            if (isForegroundLocked()) {
-                // decrement lock number
-                this.numForegroundLocks--;
-                if (this.numForegroundLocks == 0) {
-                    // save the session
-                    doSave();
-                    // free the lock
-                }
+        if (!isLocked()) {
+            // not locked => just return
+            return;
+        }
+        if (isForegroundLocked()) {
+            // decrement lock number
+            this.numForegroundLocks--;
+            if (this.numForegroundLocks == 0) {
+                // save the session
+                doSave();
+                // free the lock
             }
         }
+        log.log(Level.FINE, "CouchbaseWrapperSession.unlockForeground(): exit {0}", numForegroundLocks);
     }
 
     /**
@@ -477,21 +575,19 @@ public class CouchbaseWrapperSession extends StandardSession {
      * just touched, it depends in access status).
      */
     @Override
-    public void unlockForegroundCompletely() {
+    synchronized public void unlockForegroundCompletely() {
         log.fine("CouchbaseWrapperSession.unlockForegroundCompletely(): init");
-        //in this case we are not using locks so just return true
-        synchronized (this) {
-            if (!isLocked()) {
-                // not locked => just return
-                return;
-            }
-            if (isForegroundLocked()) {
-                // save the session
-                doSave();
-                // free the lock
-                this.numForegroundLocks = 0;
-            }
+        // free any possible lock
+        this.numForegroundLocks = 0;
+        if (!isLocked()) {
+            // not locked => just return
+            return;
         }
+        if (isForegroundLocked()) {
+            // save the session
+            doSave();
+        }
+        log.fine("CouchbaseWrapperSession.unlockForegroundCompletely(): exit");
     }
     
     //
@@ -507,7 +603,7 @@ public class CouchbaseWrapperSession extends StandardSession {
         synchronized (this) {
             // mark the session has been deleted from the repo
             this.cas = -1;
-            this.mstatus = SessionMemStatus.NOT_EXISTS;
+            setMemStatus(SessionMemStatus.NOT_EXISTS);
         }
     }
     
@@ -537,28 +633,26 @@ public class CouchbaseWrapperSession extends StandardSession {
      * @return true if the session does not exist in the couchbase repository.
      */
     @Override
-    public boolean hasExpired() {
+    synchronized public boolean hasExpired() {
         log.fine("CouchbaseWrapperSession.hasExpired(): init");
         boolean expired;
-        synchronized (this) {
-            if (isLocked() && !((CouchbaseManager)manager).isSticky()) {
-                // session is currently locked in non-sticky => not expired
-                expired = false;
-            } else if (SessionMemStatus.NOT_EXISTS.equals(this.mstatus)) {
-                // session is NOT_EXISTS => expired
-                expired = true;
-            } else {
-                // session is in other state => expired not known for sure
-                // check lock expiration and if expired re-check with a load.
-                // Take in mind that the session can be deleted by other server
-                // but we are saying it is alive (as soon as the session is locked
-                // real value takes precedence)
-                expired = localHasExpired();
-                if (expired) {
-                    doLoad(SessionMemStatus.NOT_LOADED);
-                    // session is now refreshed => NOT_EXISTS only expired value
-                    expired = SessionMemStatus.NOT_EXISTS.equals(mstatus);
-                }
+        if (isLocked() && !((CouchbaseManager) manager).isSticky()) {
+            // session is currently locked in non-sticky => not expired
+            expired = false;
+        } else if (SessionMemStatus.NOT_EXISTS.equals(this.mstatus)) {
+            // session is NOT_EXISTS => expired
+            expired = true;
+        } else {
+            // session is in other state => expired not known for sure
+            // check lock expiration and if expired re-check with a load.
+            // Take in mind that the session can be deleted by other server
+            // but we are saying it is alive (as soon as the session is locked
+            // real value takes precedence)
+            expired = localHasExpired();
+            if (expired) {
+                doLoad(SessionMemStatus.NOT_LOADED);
+                // session is now refreshed => NOT_EXISTS only expired value
+                expired = SessionMemStatus.NOT_EXISTS.equals(mstatus);
             }
         }
         log.log(Level.FINE, "CouchbaseWrapperSession.hasExpired(): exit {0}", expired);
@@ -608,6 +702,57 @@ public class CouchbaseWrapperSession extends StandardSession {
             this.astatus = SessionAccessStatus.DIRTY;
         }
     }
+
+    /**
+     * Remove Attribute. Normal method but marking state as dirty.
+     * @param name The name of the attribute to remove
+     * @param notify Should we notify interested listeners that this attribute 
+     *        is being removed?
+     * @param checkValid Indicates whether IllegalStateException must be thrown 
+     *        if session has already been invalidated
+     */
+    @Override
+    public void removeAttribute(String name, boolean notify, boolean checkValid) {
+        super.removeAttribute(name, notify, checkValid);
+        synchronized(this) {
+            this.astatus = SessionAccessStatus.DIRTY;
+        }
+    }
+
+    /**
+     * Return the attribute associated with this name. The session is marked
+     * as dirty if the attribute is not a simple object (String, Boolean or
+     * Number).
+     * @param name The name of the attribute top return
+     * @return The attribute value
+     */
+    @Override
+    public Object getAttribute(String name) {
+        Object attr = super.getAttribute(name);
+        if (!(attr instanceof String)
+                && !(attr instanceof Number)
+                && !(attr instanceof Boolean)) {
+            synchronized (this) {
+                // attribute can be modified inside the application
+                // TODO: A more intelligent method!!!
+                this.astatus = SessionAccessStatus.DIRTY;
+            }
+        }
+        return attr;
+    }
+
+    /**
+     * Setter for the principal. Set the principal as usual but the 
+     * principal name is stored also 
+     * @param principal 
+     */
+    @Override
+    public void setPrincipal(Principal principal) {
+        super.setPrincipal(principal);
+        // take note of the principal to be saved in couchbase
+        this.username = getPrincipal().getName();
+    }
+    
     
     /**
      * Debug method.
@@ -615,16 +760,20 @@ public class CouchbaseWrapperSession extends StandardSession {
      */
     @Override
     public String toString() {
-        return new StringBuffer(this.getClass().getSimpleName())
+        if (log.isLoggable(Level.FINE)) {
+            return new StringBuffer(this.getClass().getSimpleName())
                 .append(" ")
                 .append(this.mstatus)
                 .append(" [")
-                .append(getIdInternal())
+                .append(this.id)
                 .append("] hash:")
                 .append(Integer.toHexString(hashCode()))
                 .append(" cas:")
                 .append(cas)
                 .toString();
+        } else {
+            return this.id;
+        }
     }
     
 }

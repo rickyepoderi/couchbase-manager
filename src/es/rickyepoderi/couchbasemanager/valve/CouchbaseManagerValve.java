@@ -20,6 +20,8 @@ import org.apache.catalina.valves.ValveBase;
 
 /**
  *
+ * NOT USED!!!
+ * 
  * @author ricky
  */
 public class CouchbaseManagerValve extends ValveBase {
@@ -52,7 +54,7 @@ public class CouchbaseManagerValve extends ValveBase {
             if (hsession != null && hsession.getId() != null) {
                 log.log(Level.FINE, "MemManagerValve.postInvoke: session id: {0}", hsession.getId());
                 Session session = manager.findSession(hsession.getId());
-                ((CouchbaseManager) manager).doSessionSave((CouchbaseWrapperSession) session);
+                ((CouchbaseManager) manager).doSessionSave((CouchbaseWrapperSession) session, null);
             }
         }
         log.fine("MemManagerValve.postInvoke: exit");

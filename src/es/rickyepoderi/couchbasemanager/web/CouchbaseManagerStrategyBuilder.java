@@ -4,17 +4,22 @@
  */
 package es.rickyepoderi.couchbasemanager.web;
 
+import com.sun.enterprise.container.common.spi.util.JavaEEIOUtils;
 import com.sun.enterprise.deployment.runtime.web.ManagerProperties;
 import com.sun.enterprise.deployment.runtime.web.SessionManager;
 import com.sun.enterprise.deployment.runtime.web.WebProperty;
 import com.sun.enterprise.web.BasePersistenceStrategyBuilder;
 import com.sun.enterprise.web.ServerConfigLookup;
+import es.rickyepoderi.couchbasemanager.couchbase.transcoders.AppSerializingTranscoder;
 import es.rickyepoderi.couchbasemanager.session.CouchbaseManager;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import org.jvnet.hk2.annotations.Inject;
 import org.apache.catalina.Context;
 import org.apache.catalina.core.StandardContext;
+import org.jvnet.hk2.annotations.Scoped;
 import org.jvnet.hk2.annotations.Service;
+import org.jvnet.hk2.component.PerLookup;
 
 /**
  *
@@ -56,6 +61,8 @@ import org.jvnet.hk2.annotations.Service;
  *       when only accessed a session is touched in couchbase, therefore 
  *       internal timestamps are not saved. This property sets a maximum
  *       time, in order to force a save. Default 5.</li>
+ *   <li>operationTimeout: The time in milliseconds to wait for any operation
+ *       against couchbase to timeout. Default 30000ms (30s).</li>
  * </ul>
  * 
  * <p>Example of configuration:</p>
@@ -72,6 +79,7 @@ import org.jvnet.hk2.annotations.Service;
  * @author ricky
  */
 @Service(name = "coherence-web")
+@Scoped(PerLookup.class)
 public class CouchbaseManagerStrategyBuilder extends BasePersistenceStrategyBuilder {
 
     /**
@@ -124,6 +132,12 @@ public class CouchbaseManagerStrategyBuilder extends BasePersistenceStrategyBuil
      */
     public static final String PROP_MAX_ACCESS_TIME_NOT_SAVING = "maxTimeNotSaving";
     
+    /**
+     * Property that manages the timeout for any couchbase operation. This 
+     * timeout is managed in milliseconds.
+     */
+    public static final String PROP_OPERATION_TIMEOUT = "operationTimeout";
+    
     //
     // DEFAULT VALUES FOR PROPERTIES
     //
@@ -162,6 +176,11 @@ public class CouchbaseManagerStrategyBuilder extends BasePersistenceStrategyBuil
      * Default max time without saving in couchbase (5 minutes).
      */
     protected static final int DEFAULT_MAX_ACCESS_TIME_NOT_SAVING = 5;
+    
+    /**
+     * Default operation timeout (30000ms = 30s).
+     */
+    protected static final long DEFAULT_OPERATION_TIMEOUT = 30000;
     
     //
     // REAL PROPERTIES
@@ -203,6 +222,18 @@ public class CouchbaseManagerStrategyBuilder extends BasePersistenceStrategyBuil
     protected int maxAccessTimeNotSaving = DEFAULT_MAX_ACCESS_TIME_NOT_SAVING;
     
     /**
+     * property to control the operation timeout in couchbase calls.
+     */
+    protected long operationTimeout = DEFAULT_OPERATION_TIMEOUT;
+    
+    /**
+     * The ioUtils from glassfish package that are going to be used for getting
+     * the Object input/output streams. It is used in the AppSerializingTranscoder.
+     */
+    @Inject
+    private JavaEEIOUtils ioUtils;
+
+    /**
      * Main method that creates the manager and sets it to the context of the 
      * application. The properties are read from the glassfish-web.xml and
      * the manager is created and assign to the context.
@@ -224,6 +255,11 @@ public class CouchbaseManagerStrategyBuilder extends BasePersistenceStrategyBuil
         manager.setPassword(repositoryPassword);
         manager.setSticky(sticky);
         manager.setLockTime(lockTime);
+        manager.setOperationTimeout(operationTimeout);
+        log.log(Level.FINE, "MemManagerStrategyBuilder.initializePersistenceStrategy: ioUtils={0}", ioUtils);
+        AppSerializingTranscoder transcoder = new AppSerializingTranscoder();
+        transcoder.setIoUtils(ioUtils);
+        manager.setTranscoder(transcoder);
         // in configuration is in minutes but in manager in ms
         manager.setMaxAccessTimeNotSaving(maxAccessTimeNotSaving * 60000L);
         // TODO: set more values
@@ -300,6 +336,17 @@ public class CouchbaseManagerStrategyBuilder extends BasePersistenceStrategyBuil
                             }
                         } catch (NumberFormatException e) {
                             log.log(Level.WARNING, "Invalid integer format for maxAccessTimeNotSaving {0}", value);
+                        }
+                    }  else if (name.equalsIgnoreCase(PROP_OPERATION_TIMEOUT)) {
+                        log.log(Level.FINE, "operationTimeout: {0}", value);
+                        try {
+                            operationTimeout = Long.parseLong(value);
+                            if (operationTimeout < 0) {
+                                log.log(Level.WARNING, "Invalid long format for operationTimeout {0}", value);
+                                operationTimeout = DEFAULT_OPERATION_TIMEOUT;
+                            }
+                        } catch (NumberFormatException e) {
+                            log.log(Level.WARNING, "Invalid long format for operationTimeout {0}", value);
                         }
                     }
                 }
