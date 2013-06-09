@@ -781,7 +781,9 @@ public class CouchbaseWrapperSession extends StandardSession
     public void setPrincipal(Principal principal) {
         super.setPrincipal(principal);
         // take note of the principal to be saved in couchbase
-        this.username = getPrincipal().getName();
+        if (principal != null) {
+            this.username = principal.getName();
+        }
     }
     
     

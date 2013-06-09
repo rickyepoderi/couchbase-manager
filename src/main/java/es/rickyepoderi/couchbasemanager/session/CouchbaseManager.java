@@ -52,6 +52,8 @@ import javax.servlet.ServletRequest;
 import javax.servlet.ServletResponse;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpSession;
+import net.spy.memcached.PersistTo;
+import net.spy.memcached.ReplicateTo;
 import org.apache.catalina.LifecycleException;
 import org.apache.catalina.Session;
 import org.apache.catalina.session.StandardManager;
@@ -131,11 +133,6 @@ public class CouchbaseManager extends StandardManager {
     protected static final Logger log = Logger.getLogger(CouchbaseManager.class.getName());
     
     /**
-     * Variable that indicates if the manager is started or not
-     */
-    private boolean started = false;
-    
-    /**
      * Name of the manager
      */
     protected static final String name = "CouchbaseManager";
@@ -143,7 +140,7 @@ public class CouchbaseManager extends StandardManager {
     /**
      * The descriptive information about this implementation.
      */
-    private static final String info = "CouchbaseManager / 0.1";
+    private static final String info = "CouchbaseManager / 0.2";
     
     /**
      * spymemcached client to communicate with the memory repository
@@ -198,6 +195,16 @@ public class CouchbaseManager extends StandardManager {
      * The serializing transcoder used to save/get objects in couchbase
      */
     protected AppSerializingTranscoder transcoder = null;
+    
+    /**
+     * Number of nodes to persist an operation
+     */
+    protected PersistTo persistTo = PersistTo.ZERO;
+    
+    /**
+     * Number of nodes to replicate an operation
+     */
+    protected ReplicateTo replicateTo = ReplicateTo.ZERO;
     
     //
     // CONSTRUCTOR
@@ -322,6 +329,38 @@ public class CouchbaseManager extends StandardManager {
     public void setTranscoder(AppSerializingTranscoder transcoder) {
         this.transcoder = transcoder;
     }
+
+    /**
+     * Getter for the PersistTo property.
+     * @return The number of nodes to persist an operation
+     */
+    public PersistTo getPersistTo() {
+        return persistTo;
+    }
+
+    /**
+     * Setter for the persistTo property.
+     * @param persistTo The new number of nodes to persist
+     */
+    public void setPersistTo(PersistTo persistTo) {
+        this.persistTo = persistTo;
+    }
+
+    /**
+     * Getter for the replicateTo property.
+     * @return The number of nodes to replicate.
+     */
+    public ReplicateTo getReplicateTo() {
+        return replicateTo;
+    }
+
+    /**
+     * Setter for the replicateTo property.
+     * @param replicateTo The number of nodes to replicate an operation.
+     */
+    public void setReplicateTo(ReplicateTo replicateTo) {
+        this.replicateTo = replicateTo;
+    }
     
     //
     // MANAGER METHODS (overriden StandardManager)
@@ -360,8 +399,11 @@ public class CouchbaseManager extends StandardManager {
     }
 
     /**
-     * Not implemented now.
-     * @param session 
+     * Method that change the sessionId. It seems that it is used when a
+     * session is authenticated (the principal is set). The session is deleted
+     * in couchbase, then the id is changed normally and the session is added
+     * to couchbase with the new id. The session is marked not loaded.
+     * @param session The session to change id
      */
     @Override
     public void changeSessionId(Session session) {
@@ -656,7 +698,7 @@ public class CouchbaseManager extends StandardManager {
             //client = new CouchbaseClient(baseURIs, "default", null, "");
             transcoder.setAppLoader(this.getContainer().getLoader().getClassLoader());
             client = new Client<CouchbaseWrapperSession>(baseURIs, this.bucket, 
-                    this.username, this.password, transcoder);
+                    this.username, this.password, transcoder, persistTo, replicateTo);
         } catch (Exception e) {
             log.log(Level.SEVERE, "Error initiliazing spymemcached client...", e);
             initialized = false;
@@ -675,52 +717,21 @@ public class CouchbaseManager extends StandardManager {
         client.shutdown();
         log.fine("CouchbaseManager.destroy: exit");
     }
-    
-    /**
-     * Start the manager. Initializes the manager and start.
-     * @throws LifecycleException Some error.
-     */
-    @Override
-    public void start() throws LifecycleException {
-        log.fine("CouchbaseManager.start: init");
-        if (!initialized) {
-            init();
-            if (!initialized) {
-                log.severe("Couchbase Manager couldn't be initialized");
-                throw new LifecycleException("The manager couldn't be initialized");
-            }
-        }
-        // Validate and update our current component state
-        if (started) {
-            log.info("CouchbaseManager already alreadyStarted");
-            return;
-        }
-        lifecycle.fireLifecycleEvent(START_EVENT, null);
-        started = true;
-        // Force initialization of the random number generator
-        log.finest("Force random number initialization starting");
-        generateSessionId();
-        log.fine("CouchbaseManager.start: exit");
-    }
 
     /**
-     * Stop the manager.
+     * Stop the manager without deleting the sessions (the sessions also are
+     * in the couchbase and they should not be deleted). Even is not shutdown
+     * (removement of the application)???
+     * @param isShutdown it marks if the server is being shutdown
      * @throws LifecycleException  Some error.
      */
     @Override
-    public void stop() throws LifecycleException {
-        log.fine("CouchbaseManager.stop: init");
-        if (!started) {
-            throw new LifecycleException("CouchbaseManager not started");
-        }
-        lifecycle.fireLifecycleEvent(STOP_EVENT, null);
-        started = false;
-        // stop the random engine
-        this.random = null;
-        // destroy manager
-        if (initialized) {
-            destroy();
-        }
+    public void stop(boolean isShutdown) throws LifecycleException {
+        log.log(Level.FINE, "CouchbaseManager.stop: init {0}", isShutdown);
+        // do not delete sessions on stop, sessions deleted against couchbase too
+        // I am not removing them even in undeployment
+        clearSessions();
+        super.stop(isShutdown);
         log.fine("CouchbaseManager.stop: exit");
     }
     
@@ -759,7 +770,7 @@ public class CouchbaseManager extends StandardManager {
             } else {
                 req = client.gets(session);
             }
-            ClientResult res = req.waitForCompletion(this.operationTimeout);
+            ClientResult res = client.waitForCompletion(req, this.operationTimeout);
             if (res.isSuccess()) {
                 log.fine("The session was in the repository, returning it");
                 CouchbaseWrapperSession loaded = (CouchbaseWrapperSession) res.getValue();
@@ -808,7 +819,7 @@ public class CouchbaseManager extends StandardManager {
             req = client.cas(session, session.getCas(), this.getMaxInactiveInterval());
         }
         if (exec == null) {
-            ClientResult res = req.waitForCompletion(this.operationTimeout);
+            ClientResult res = client.waitForCompletion(req, this.operationTimeout);
             if (!res.isSuccess()) {
                 session.setMemStatus(SessionMemStatus.ERROR);
                 IllegalStateException e = new IllegalStateException(res.getStatus().getMessage(), res.getException());
@@ -817,7 +828,7 @@ public class CouchbaseManager extends StandardManager {
             }
             req = null;
         } else {
-            req.execOnCompletion(this.operationTimeout, exec);
+            client.execOnCompletion(req, this.operationTimeout, exec);
         }
         log.log(Level.FINE, "CouchbaseManager.doSessionSave(Session,ExecOnCompletion): exit {0}", req);
         return req;
@@ -839,7 +850,7 @@ public class CouchbaseManager extends StandardManager {
         }
         ClientRequest req = client.delete(session);
         if (exec == null) {
-            ClientResult res = req.waitForCompletion(this.operationTimeout);
+            ClientResult res = client.waitForCompletion(req, this.operationTimeout);
             if (!res.isSuccess()) {
                 session.setMemStatus(SessionMemStatus.ERROR);
                 IllegalStateException e = new IllegalStateException(res.getStatus().getMessage(), res.getException());
@@ -851,7 +862,7 @@ public class CouchbaseManager extends StandardManager {
             }
             req = null;
         } else {
-            req.execOnCompletion(this.operationTimeout, exec);
+            client.execOnCompletion(req, this.operationTimeout, exec);
         }
         log.log(Level.FINE, "CouchbaseManager.doSessionDelete(Session,ExecOnCompletion): exit {0}", req);
         return req;
@@ -870,7 +881,7 @@ public class CouchbaseManager extends StandardManager {
         session.waitOnExecution();
         ClientRequest req = client.unlock(session, session.getCas());
         if (exec == null) {
-            ClientResult res = req.waitForCompletion(this.operationTimeout);
+            ClientResult res = client.waitForCompletion(req, this.operationTimeout);
             if (!res.isSuccess()) {
                 session.setMemStatus(SessionMemStatus.ERROR);
                 IllegalStateException e = new IllegalStateException(res.getStatus().getMessage(), res.getException());
@@ -879,7 +890,7 @@ public class CouchbaseManager extends StandardManager {
             }
             req = null;
         } else {
-            req.execOnCompletion(this.operationTimeout, exec);
+            client.execOnCompletion(req, this.operationTimeout, exec);
         }
         log.log(Level.FINE, "CouchbaseManager.doSessionUnlock(Session,ExecOnCompletion): exit {0}", req);
         return req;
@@ -899,7 +910,7 @@ public class CouchbaseManager extends StandardManager {
         session.waitOnExecution();
         ClientRequest req = client.touch(session, this.getMaxInactiveInterval());
         if (exec == null) {
-            ClientResult res = req.waitForCompletion(this.operationTimeout);
+            ClientResult res = client.waitForCompletion(req, this.operationTimeout);
             if (!res.isSuccess()) {
                 session.setMemStatus(SessionMemStatus.ERROR);
                 IllegalStateException e = new IllegalStateException(res.getStatus().getMessage(), res.getException());
@@ -908,7 +919,7 @@ public class CouchbaseManager extends StandardManager {
             }
             req = null;
         } else {
-            req.execOnCompletion(this.operationTimeout, exec);
+            client.execOnCompletion(req, this.operationTimeout, exec);
         }
         log.log(Level.FINE, "CouchbaseManager.doSessionTouch(Session,ExecOnCompletion): exit {0}", req);
         return req;
@@ -923,7 +934,7 @@ public class CouchbaseManager extends StandardManager {
         session.waitOnExecution();
         try {
             ClientRequest req = client.add(session, this.getMaxInactiveInterval());
-            ClientResult res = req.waitForCompletion(this.operationTimeout);
+            ClientResult res = client.waitForCompletion(req, this.operationTimeout);
             if (!res.isSuccess()) {
                 session.setMemStatus(SessionMemStatus.ERROR);
                 IllegalStateException e = new IllegalStateException(res.getStatus().getMessage(), res.getException());

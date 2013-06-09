@@ -80,6 +80,11 @@ public class ClientResult {
     private Object value = null;
     
     /**
+     * The key used in the operation.
+     */
+    private String key = null;
+    
+    /**
      * The exception that generated the EXCEPTION status
      */
     private Throwable exception = null;
@@ -93,6 +98,7 @@ public class ClientResult {
         this.status = null;
         this.cas = -1;
         this.value = null;
+        this.key = null;
     }
     
     /**
@@ -111,13 +117,14 @@ public class ClientResult {
      * @param status The status produced by the operation.
      * @param cas The cas returned by couchbase
      * @param value The object returned by couchbase
+     * @param key The key value
      */
-    private ClientResult(OperationType type, OperationStatus status, long cas, Object value) {
-        this();
-        this.type = type;
+    private ClientResult(OperationType type, OperationStatus status, long cas, Object value, String key) {
+        this(type);
         this.status = status;
         this.cas = cas;
         this.value = value;
+        this.key = key;
     }
     
     /**
@@ -133,6 +140,7 @@ public class ClientResult {
         try {
             CASValue<Object> casValue = future.get(timeout, TimeUnit.MILLISECONDS);
             res.status = future.getStatus();
+            res.key = future.getKey();
             if (res.status.isSuccess()) {
                 res.cas = future.get().getCas();
                 res.value = casValue.getValue();
@@ -144,6 +152,7 @@ public class ClientResult {
             res.status = EXCEPTION;
             res.cas = -1;
             res.value = null;
+            res.key = null;
             res.exception = e;
         }
         return res;
@@ -157,12 +166,13 @@ public class ClientResult {
      * @param future The future returned by couchbase
      * @return The result for this operation
      */
-    protected static ClientResult createClientResultCas(long timeout, OperationType type, Future<CASResponse> future) {
+    protected static ClientResult createClientResultCas(long timeout, OperationType type, OperationFuture<CASResponse> future) {
         ClientResult res = new ClientResult(type);
         res.cas = -1;
         res.value = null;
         try {
             CASResponse cas = future.get(timeout, TimeUnit.MILLISECONDS);
+            res.key = future.getKey();
             if (CASResponse.OK.equals(cas)) {
                 res.status = new OperationStatus(true, "CAS OK!");
             } else if (CASResponse.NOT_FOUND.equals(cas)) {
@@ -189,11 +199,14 @@ public class ClientResult {
      */
     protected static ClientResult createClientResultOperation(long timeout, OperationType type, OperationFuture<Boolean> future) {
         ClientResult res = new ClientResult(type);
-        res.cas = -1;
+        if (!OperationType.UNLOCK.equals(type) && !OperationType.TOUCH.equals(type)) {
+            res.cas = future.getCas();
+        }
         res.value = null;
         try {
             future.get(timeout, TimeUnit.MILLISECONDS);
             res.status = future.getStatus();
+            res.key = future.getKey();
         } catch (Exception e) {
             res.status = EXCEPTION;
             res.exception = e;
@@ -231,6 +244,14 @@ public class ClientResult {
      */
     public Object getValue() {
         return value;
+    }
+    
+    /**
+     * The key used in the operation.
+     * @return The key used
+     */
+    public String getKey() {
+        return key;
     }
     
     /**

@@ -56,6 +56,12 @@ public class ClientRequest {
     private class Executor implements Runnable {
 
         /**
+         * The client should be used cos request waitForCompletion now 
+         * does not fit the PersistTo and ReplicateTo parameters.
+         */
+        private Client client = null;
+        
+        /**
          * The request.
          */
         private ClientRequest req = null;
@@ -77,11 +83,13 @@ public class ClientRequest {
         
         /**
          * Constructor.
+         * @param client The client
          * @param req The request
          * @param exec The code to execute (it can be null)
          * @param timeout Timeout to wait for the operation to finish (in ms)
          */
-        public Executor(ClientRequest req, ExecOnCompletion exec, long timeout) {
+        public Executor(Client client, ClientRequest req, ExecOnCompletion exec, long timeout) {
+            this.client = client;
             this.req = req;
             this.exec = exec;
             this.timeout = timeout;
@@ -101,7 +109,7 @@ public class ClientRequest {
          */
         @Override
         public void run() {
-            res = req.waitForCompletion(timeout);
+            res = client.waitForCompletion(req, timeout);
             if (exec != null) {
                 exec.execute(res);
             }
@@ -121,9 +129,9 @@ public class ClientRequest {
     private OperationFuture<CASValue<Object>> futureObject = null;
     
     /**
-     * CAS is the only method that produces a Future&lt;CASResponse&gt; object.
+     * CAS is the only method that produces a OperationFuture&lt;CASResponse&gt; object.
      */
-    private Future<CASResponse> futureCas = null;
+    private OperationFuture<CASResponse> futureCas = null;
     
     /**
      * All the rest of couchbase operations produces a OperationFuture&lt;Boolean&gt;.
@@ -141,7 +149,7 @@ public class ClientRequest {
      * @param type The type of the client
      * @param future The future returned by couchbase
      */
-    private ClientRequest(OperationType type, Future future) {
+    private ClientRequest(OperationType type, OperationFuture future) {
         this.type = type;
         if (OperationType.GET_AND_LOCK.equals(type) || OperationType.GETS.equals(type)) {
             this.futureObject = (OperationFuture) future;
@@ -184,7 +192,7 @@ public class ClientRequest {
      * @param future The result of this couchbase operation
      * @return The request
      */
-    public static ClientRequest createCas(Future<CASResponse> future) {
+    public static ClientRequest createCas(OperationFuture<CASResponse> future) {
         return new ClientRequest(OperationType.CAS, future);
     }
     
@@ -281,11 +289,14 @@ public class ClientRequest {
     }
     
     /**
-     * Method that waits the operation to complete synchronously. 
+     * Method that waits the operation to complete synchronously. The 
+     * method is protected cos the Client one should be used, now PersistTo
+     * and ReplicateTo parameters can be specified to force the operation
+     * to be in a specified number of nodes.
      * @param timeout Timeout to wait for the operation to finish (in ms)
      * @return The client result of the operation
      */
-    public ClientResult waitForCompletion(long timeout) {
+    protected ClientResult waitForCompletion(long timeout) {
         if (this.isObject()) {
             return ClientResult.createClientResultObject(timeout, this.type, this.futureObject);
         } else if (this.isCAS()) {
@@ -298,12 +309,13 @@ public class ClientRequest {
     /**
      * Executes the operation asynch but after it is finished a code is
      * executed. This method uses an internal thread.
+     * @param client The client to be used to wait for the operation
      * @param timeout Timeout to wait for the operation to finish (in ms)
      * @param exec The code to execute at finishing
      */
-    public void execOnCompletion(long timeout, ExecOnCompletion exec) {
+    protected void execOnCompletion(Client client, long timeout, ExecOnCompletion exec) {
         if (thread == null) {
-            thread = new Thread(new Executor(this, exec, timeout));
+            thread = new Thread(new Executor(client, this, exec, timeout));
             thread.start();
         }
     }

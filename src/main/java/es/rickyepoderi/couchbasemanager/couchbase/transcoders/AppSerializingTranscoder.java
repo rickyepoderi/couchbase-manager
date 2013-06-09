@@ -109,7 +109,7 @@ public class AppSerializingTranscoder extends SerializingTranscoder {
     
     /**
      * Setter for ioUtils to use Glassfish Object Input/Output Streams.
-     * @param iOUtils Glassfish IOUtils.
+     * @param ioUtils Glassfish IOUtils.
      */
     public void setIoUtils(JavaEEIOUtils ioUtils) {
         this.ioUtils = ioUtils;

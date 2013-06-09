@@ -36,6 +36,7 @@
 package es.rickyepoderi.couchbasemanager.couchbase;
 
 import com.couchbase.client.CouchbaseClient;
+import com.couchbase.client.CouchbaseConnectionFactory;
 import java.io.IOException;
 import java.io.Serializable;
 import java.net.URI;
@@ -43,7 +44,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.logging.Logger;
-import net.spy.memcached.DefaultConnectionFactory;
+import net.spy.memcached.PersistTo;
+import net.spy.memcached.ReplicateTo;
 import net.spy.memcached.transcoders.Transcoder;
 
 /**
@@ -66,7 +68,15 @@ public class Client<Data extends ClientData> {
      */
     private CouchbaseClient client = null;
     
-    private Transcoder<Object> transcoder = null;
+    /**
+     * The number of nodes to persist an operation.
+     */
+    private PersistTo persistTo = PersistTo.ZERO;
+    
+    /**
+     * The number of nodes to replicate an operation.
+     */
+    private ReplicateTo replicateTo = ReplicateTo.ZERO;
     
     /**
      * Constructor of the client. It uses the typical couchbase client 
@@ -80,7 +90,6 @@ public class Client<Data extends ClientData> {
     public Client(List<URI> baseURIs, String bucket, String username, 
             String password) throws IOException {
         client = new CouchbaseClient(baseURIs, bucket, username, password);
-        this.transcoder = new DefaultConnectionFactory().getDefaultTranscoder();
     }
     
     /**
@@ -95,8 +104,61 @@ public class Client<Data extends ClientData> {
      */
     public Client(List<URI> baseURIs, String bucket, String username, 
             String password, Transcoder<Object> transcoder) throws IOException {
-        client = new CouchbaseClient(baseURIs, bucket, username, password);
-        this.transcoder = transcoder;
+        CouchbaseConnectionFactory cf = new AppCouchbaseConnectionFactory(baseURIs, bucket, password, transcoder);
+        client = new CouchbaseClient(cf);
+    }
+    
+    /**
+     * Constructor of the client. It uses the typical couchbase client 
+     * arguments and the transcoder to use.
+     * @param baseURIs The URIs where couchbase servers are
+     * @param bucket The bucket for the sessions
+     * @param username The username
+     * @param password The password
+     * @param transcoder The transcoder to use in serialization/deserialization
+     * @param persistTo  The number of nodes to persist
+     * @param replicateTo The number of nodes to replicate
+     * @throws IOException Some error initializing the client
+     */
+    public Client(List<URI> baseURIs, String bucket, String username, 
+            String password, Transcoder<Object> transcoder, 
+            PersistTo persistTo, ReplicateTo replicateTo) throws IOException {
+        CouchbaseConnectionFactory cf = new AppCouchbaseConnectionFactory(baseURIs, bucket, password, transcoder);
+        client = new CouchbaseClient(cf);
+        this.persistTo = persistTo;
+        this.replicateTo = replicateTo;
+    }
+
+    /**
+     * Getter for persistTo
+     * @return The persistTo
+     */
+    public PersistTo getPersistTo() {
+        return persistTo;
+    }
+
+    /**
+     * Setter for persistTo
+     * @param persistTo The new persistTo
+     */
+    public void setPersistTo(PersistTo persistTo) {
+        this.persistTo = persistTo;
+    }
+
+    /**
+     * Getter the replicateTo
+     * @return The replicateTo
+     */
+    public ReplicateTo getReplicateTo() {
+        return replicateTo;
+    }
+
+    /** 
+     * Setter the replicateTo
+     * @param replicateTo The new replicateTo
+     */
+    public void setReplicateTo(ReplicateTo replicateTo) {
+        this.replicateTo = replicateTo;
     }
     
     /**
@@ -109,26 +171,35 @@ public class Client<Data extends ClientData> {
     /**
      * After one operation request is created this method waits synchronously 
      * the completion of the method. So although always asynch methods are 
-     * executed this method gives the synch way of execution.
+     * executed this method gives the synch way of execution. Since v0.2 the
+     * PersistTo and ReplicateTo parameters are also used to force a write
+     * operation to persist or replicate to a number of nodes.
      * @param request The request to execute
      * @param timeout Timeout to wait for the operation to finish (in ms)
-     * @return The client result os the operation
+     * @return The client result of the operation
      */
     public ClientResult waitForCompletion(ClientRequest request, long timeout) {
-        return request.waitForCompletion(timeout);
+        ClientResult response = request.waitForCompletion(timeout);
+        if (response.isSuccess() && response.getCas() != -1 && (request.isOperation() || request.isCAS())) {
+            client.observePoll(response.getKey(), response.getCas(), 
+                    persistTo, replicateTo, 
+                    request.getType().equals(OperationType.DELETE));
+        }
+        return response;
     }
     
     /**
      * After one operation is created this method executes it asynchronously.
      * The exec parameter let us execute some code after the operation is
      * finished. This method launches the request using a thread and this thread
-     * waits for the operation to finish and then executes the exec.
+     * waits for the operation to finish and then executes the exec. Since v0.2
+     * it waits to PersistTo and ReplicateTo.
      * @param request The request to execute async
      * @param timeout Timeout to wait for the operation to finish (in ms)
      * @param exec The code to execute after the operation is performed (can be null)
      */
     public void execOnCompletion(ClientRequest request, long timeout, ExecOnCompletion exec) {
-        request.execOnCompletion(timeout, exec);
+        request.execOnCompletion(this, timeout, exec);
     }
     
     /**
@@ -138,7 +209,7 @@ public class Client<Data extends ClientData> {
      * @return The request of this operation
      */
     public ClientRequest getAndLock(Data data, int timeout) {
-        return ClientRequest.createGetAndLockResult(client.asyncGetAndLock(data.getId(), timeout, transcoder));
+        return ClientRequest.createGetAndLockResult(client.asyncGetAndLock(data.getId(), timeout));
     }
     
     /**
@@ -147,7 +218,7 @@ public class Client<Data extends ClientData> {
      * @return The request of this operation
      */
     public ClientRequest gets(Data data) {
-        return ClientRequest.createGets(client.asyncGets(data.getId(), transcoder));
+        return ClientRequest.createGets(client.asyncGets(data.getId()));
     }
     
     /**
@@ -157,7 +228,7 @@ public class Client<Data extends ClientData> {
      * @return The request of this operation
      */
     public ClientRequest set(Data data, int time) {
-        return ClientRequest.createSet(client.set(data.getId(), time, data, transcoder));
+        return ClientRequest.createSet(client.set(data.getId(), time, data));
     }
     
     /**
@@ -169,8 +240,7 @@ public class Client<Data extends ClientData> {
      */
     public ClientRequest cas(Data data, long cas, int time) {
         return ClientRequest.createCas(
-                client.asyncCAS(data.getId(), cas, time, data,
-                transcoder)); // TODO: set a transcoder via configuration
+                client.asyncCAS(data.getId(), cas, time, data, client.getTranscoder()));
     }
     
     /**
@@ -189,7 +259,7 @@ public class Client<Data extends ClientData> {
      * @return The request of this operation
      */
     public ClientRequest unlock(Data data, long cas) {
-        return ClientRequest.createUnlock(client.asyncUnlock(data.getId(), cas, transcoder));
+        return ClientRequest.createUnlock(client.asyncUnlock(data.getId(), cas));
     }
     
     /**
@@ -199,7 +269,7 @@ public class Client<Data extends ClientData> {
      * @return The request of this operation
      */
     public ClientRequest touch(Data data, int time) {
-        return ClientRequest.createTouch(client.touch(data.getId(), time, transcoder));
+        return ClientRequest.createTouch(client.touch(data.getId(), time));
     }
     
     /**
@@ -209,7 +279,7 @@ public class Client<Data extends ClientData> {
      * @return The request of this operation
      */
     public ClientRequest add(Data data, int time) {
-        return ClientRequest.createAdd(client.add(data.getId(), time, data, transcoder));
+        return ClientRequest.createAdd(client.add(data.getId(), time, data));
     }
     
     /**
@@ -249,27 +319,61 @@ public class Client<Data extends ClientData> {
             client = new Client<SampleData>(baseUris, "default", null, "");
             SampleData data = new SampleData();
             // add
-            System.err.println("Adding... " + data);
+            System.err.println(System.currentTimeMillis() + " Adding... " + data);
             ClientRequest addRequest = client.add(data, 30000);
-            ClientResult addResult = addRequest.waitForCompletion(15000);
-            System.err.println(addResult.getStatus());
-            // get
-            System.err.println("Gets... " + data);
+            System.err.println(System.currentTimeMillis());
+            ClientResult addResult = client.waitForCompletion(addRequest, 15000);
+            System.err.println(System.currentTimeMillis() + " " + addResult.getStatus());
+            // touch
+            System.err.println(System.currentTimeMillis() + " Touch... " + data);
+            ClientRequest touchRequest = client.touch(data, 30000);
+            System.err.println(System.currentTimeMillis());
+            ClientResult touchResult = client.waitForCompletion(touchRequest, 15000);
+            System.err.println(System.currentTimeMillis() + " " + touchResult.getStatus());
+            // set
+            System.err.println(System.currentTimeMillis() + " Set... " + data);
+            ClientRequest setRequest = client.touch(data, 30000);
+            System.err.println(System.currentTimeMillis());
+            ClientResult setResult = client.waitForCompletion(setRequest, 15000);
+            System.err.println(System.currentTimeMillis() + " " + setResult.getStatus());
+            // gets
+            System.err.println(System.currentTimeMillis() + " Gets... " + data);
             ClientRequest getsRequest = client.gets(data);
-            ClientResult getsResult = getsRequest.waitForCompletion(15000);
-            System.err.println(getsResult.getStatus() + ": " + getsResult.getValue());
+            System.err.println(System.currentTimeMillis());
+            ClientResult getsResult = client.waitForCompletion(getsRequest, 15000);
+            System.err.println(System.currentTimeMillis() + " " + getsResult.getStatus() + ": " + getsResult.getValue());
+            // cas
+            System.err.println(System.currentTimeMillis() + " cas... " + data);
+            ClientRequest casRequest = client.cas(data, getsResult.getCas(), 30000);
+            System.err.println(System.currentTimeMillis());
+            ClientResult casResult = client.waitForCompletion(casRequest, 15000);
+            System.err.println(System.currentTimeMillis() + " " + getsResult.getStatus() + ": " + casResult.getValue());
+            // getAndLock
+            System.err.println(System.currentTimeMillis() + " GetAndLock... " + data);
+            ClientRequest getAndLockRequest = client.getAndLock(data, 30);
+            System.err.println(System.currentTimeMillis());
+            ClientResult getAndLockResult = client.waitForCompletion(getAndLockRequest, 15000);
+            System.err.println(System.currentTimeMillis() + " " + getsResult.getStatus() + ": " + getAndLockResult.getValue());
+            // unlock
+            System.err.println(System.currentTimeMillis() + " GetAndLock... " + data);
+            ClientRequest unlockRequest = client.unlock(data, getAndLockResult.getCas());
+            System.err.println(System.currentTimeMillis());
+            ClientResult unlockResult = client.waitForCompletion(unlockRequest, 15000);
+            System.err.println(System.currentTimeMillis() + " " + getsResult.getStatus() + ": " + unlockResult.getValue());
             // delete
-            System.err.println("Delete... " + data);
+            System.err.println(System.currentTimeMillis() + " Delete... " + data);
             ClientRequest deleteRequest = client.delete(data);
-            deleteRequest.execOnCompletion(
+            client.execOnCompletion(
+                    deleteRequest,
                     15000,
                     new ExecOnCompletion() {
                         @Override
                         public void execute(ClientResult result) {
-                            System.err.println("Deleted1.. " + result.getStatus());
+                            System.err.println(System.currentTimeMillis() + " Deleted1.. " + result.getStatus());
                         }
                     });
         } finally {
+            Thread.sleep(2000);
             if (client != null) {
                 client.shutdown();
             }

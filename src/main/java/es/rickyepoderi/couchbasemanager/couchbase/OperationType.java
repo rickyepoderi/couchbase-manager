@@ -52,7 +52,7 @@ public enum OperationType {
     GET_AND_LOCK,
     GETS,
     
-    // CAS operation, returns Future<CASResponse>
+    // CAS operation, returns OperationFuture<CASResponse>
     
     CAS,
     

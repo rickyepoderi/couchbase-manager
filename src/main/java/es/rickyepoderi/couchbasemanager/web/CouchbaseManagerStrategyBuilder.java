@@ -45,6 +45,8 @@ import es.rickyepoderi.couchbasemanager.couchbase.transcoders.AppSerializingTran
 import es.rickyepoderi.couchbasemanager.session.CouchbaseManager;
 import java.util.logging.Level;
 import java.util.logging.Logger;
+import net.spy.memcached.PersistTo;
+import net.spy.memcached.ReplicateTo;
 import org.apache.catalina.Context;
 import org.apache.catalina.core.StandardContext;
 import org.jvnet.hk2.annotations.Inject;
@@ -94,6 +96,14 @@ import org.jvnet.hk2.component.PerLookup;
  *       time, in order to force a save. Default 5.</li>
  *   <li>operationTimeout: The time in milliseconds to wait for any operation
  *       against couchbase to timeout. Default 30000ms (30s).</li>
+ *   <li>persistTo: the amount of nodes the item should be persisted to before 
+ *       returning. This is a couchbase parameter to all write/modification
+ *       operation, the value should be the String representation of the
+ *       net.spy.memcached.PersistTo enum. Default ZERO.</li>
+ *   <li>replicateTo: the amount of nodes the item should be replicated to 
+ *       before returning. This is a couchbase parameter to all write/modification
+ *       operation, the value should be the String representation of the
+ *       net.spy.memcached.ReplicatedTo enum. Default ZERO.</li>
  * </ul>
  * 
  * <p>Example of configuration:</p>
@@ -169,6 +179,16 @@ public class CouchbaseManagerStrategyBuilder extends BasePersistenceStrategyBuil
      */
     public static final String PROP_OPERATION_TIMEOUT = "operationTimeout";
     
+    /**
+     * Property that manages the number of nodes to persist an operation.
+     */
+    public static final String PROP_PERSIST_TO = "persistTo";
+    
+    /**
+     * Property that manages the number of nodes to replicate an operation.
+     */
+    public static final String PROP_REPLICATE_TO = "replicateTo";
+    
     //
     // DEFAULT VALUES FOR PROPERTIES
     //
@@ -212,6 +232,16 @@ public class CouchbaseManagerStrategyBuilder extends BasePersistenceStrategyBuil
      * Default operation timeout (30000ms = 30s).
      */
     protected static final long DEFAULT_OPERATION_TIMEOUT = 30000;
+    
+    /**
+     * Default value for persistTo value (ZERO)
+     */
+    protected static final PersistTo DEFAULT_PERSIST_TO = PersistTo.ZERO;
+    
+    /**
+     * Default value for replicateTo (ZERO)
+     */
+    protected static final ReplicateTo DEFAULT_REPLICATE_TO = ReplicateTo.ZERO;
     
     //
     // REAL PROPERTIES
@@ -258,6 +288,16 @@ public class CouchbaseManagerStrategyBuilder extends BasePersistenceStrategyBuil
     protected long operationTimeout = DEFAULT_OPERATION_TIMEOUT;
     
     /**
+     * property to control the number of nodes to persist an operation.
+     */
+    protected PersistTo persistTo = DEFAULT_PERSIST_TO;
+    
+    /**
+     * property to control the number of nodes to replicate an operation.
+     */
+    protected ReplicateTo replicateTo = DEFAULT_REPLICATE_TO;
+    
+    /**
      * The ioUtils from glassfish package that are going to be used for getting
      * the Object input/output streams. It is used in the AppSerializingTranscoder.
      */
@@ -287,6 +327,8 @@ public class CouchbaseManagerStrategyBuilder extends BasePersistenceStrategyBuil
         manager.setSticky(sticky);
         manager.setLockTime(lockTime);
         manager.setOperationTimeout(operationTimeout);
+        manager.setPersistTo(persistTo);
+        manager.setReplicateTo(replicateTo);
         log.log(Level.FINE, "MemManagerStrategyBuilder.initializePersistenceStrategy: ioUtils={0}", ioUtils);
         AppSerializingTranscoder transcoder = new AppSerializingTranscoder();
         transcoder.setIoUtils(ioUtils);
@@ -378,6 +420,20 @@ public class CouchbaseManagerStrategyBuilder extends BasePersistenceStrategyBuil
                             }
                         } catch (NumberFormatException e) {
                             log.log(Level.WARNING, "Invalid long format for operationTimeout {0}", value);
+                        }
+                    } else if (name.equalsIgnoreCase(PROP_PERSIST_TO)) {
+                        log.log(Level.FINE, "persistTo: {0}", value);
+                        try {
+                            persistTo = PersistTo.valueOf(value);
+                        } catch (Exception e) {
+                            log.log(Level.WARNING, "Invalid PersistTo enum {0}", value);
+                        }
+                    } else if (name.equalsIgnoreCase(PROP_REPLICATE_TO)) {
+                        log.log(Level.FINE, "replicateTo: {0}", value);
+                        try {
+                            replicateTo = ReplicateTo.valueOf(value);
+                        } catch (Exception e) {
+                            log.log(Level.WARNING, "Invalid ReplicateTo enum {0}", value);
                         }
                     }
                 }

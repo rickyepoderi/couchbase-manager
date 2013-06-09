@@ -11,6 +11,8 @@ import java.util.concurrent.Future;
 import net.spy.memcached.CASResponse;
 import net.spy.memcached.CASValue;
 import net.spy.memcached.DefaultConnectionFactory;
+import net.spy.memcached.PersistTo;
+import net.spy.memcached.ReplicateTo;
 import net.spy.memcached.internal.OperationFuture;
 
 /**
@@ -28,11 +30,16 @@ public class Test2 {
             client = new CouchbaseClient(baseURIs, "default", null, "");
             String key = "dd2982ff68406c937040cd0c509b";
             
-            System.err.println("deleteing the object");
-            System.err.println("delete: " + client.delete(key).get());
+//            System.err.println("deleteing the object");
+//            System.err.println("delete: " + client.delete(key).get());
 //
-//            System.err.println("Creating the object");
-//            client.set(key, 300, "lala");
+            System.err.println("Creating the object");
+            System.err.println(System.currentTimeMillis() + ": antes de add");
+            OperationFuture<Boolean> addFuture = client.add(key, 300, "lala");
+            System.err.println(System.currentTimeMillis() + ": antes de getStatus");
+            System.err.println("Status add: " + addFuture.getStatus());
+            System.err.println(System.currentTimeMillis() + ": despues de getStatus");
+            
 //
 //            System.err.println("Getting and locking the object");
 //            OperationFuture<CASValue<Object>> future = client.asyncGetAndLock(key, 30);
@@ -61,10 +68,17 @@ public class Test2 {
 //            Future<CASResponse> future3 = client.asyncCAS(key, future.get().getCas(), 
 //                    300, "new value", new DefaultConnectionFactory().getDefaultTranscoder());
 //            System.err.println("Error CAS: " + future3.get());
-//            if (!future.getStatus().isSuccess()) {
+//            if (!future3.getStatus().isSuccess()) {
 //                throw new Exception("Error unlocking!!!!");
 //            }
             
+            System.err.println("delete");
+            OperationFuture<Boolean> future4 = client.delete(key);
+            System.err.println("delete: " + future4.getStatus());
+            if (!future4.getStatus().isSuccess()) {
+                throw new Exception("Error deleting!!!");
+            }
+           
         } finally {
             if (client != null) {
                 client.shutdown();
