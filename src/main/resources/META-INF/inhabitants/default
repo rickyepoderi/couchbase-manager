@@ -1,1 +1,1 @@
-class=es.rickyepoderi.couchbasemanager.web.CouchbaseManagerStrategyBuilder,index=com.sun.enterprise.web.PersistenceStrategyBuilder:coherence-web
+class=es.rickyepoderi.couchbasemanager.web.CouchbaseManagerStrategyBuilderV3,index=com.sun.enterprise.web.PersistenceStrategyBuilder:coherence-web

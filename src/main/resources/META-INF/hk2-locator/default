@@ -1,0 +1,3 @@
+[es.rickyepoderi.couchbasemanager.web.CouchbaseManagerStrategyBuilderV4]
+contract={com.sun.enterprise.web.PersistenceStrategyBuilder}
+name=coherence-web

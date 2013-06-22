@@ -34,22 +34,18 @@ public class Test2 {
 //            System.err.println("delete: " + client.delete(key).get());
 //
             System.err.println("Creating the object");
-            System.err.println(System.currentTimeMillis() + ": antes de add");
             OperationFuture<Boolean> addFuture = client.add(key, 300, "lala");
-            System.err.println(System.currentTimeMillis() + ": antes de getStatus");
             System.err.println("Status add: " + addFuture.getStatus());
-            System.err.println(System.currentTimeMillis() + ": despues de getStatus");
             
-//
-//            System.err.println("Getting and locking the object");
-//            OperationFuture<CASValue<Object>> future = client.asyncGetAndLock(key, 30);
-//            System.err.println("Status getl: " + future.getStatus());
-//            if (!future.getStatus().isSuccess()) {
-//                throw new Exception("Error locking!!!!");
-//            }
-//            System.err.println("Lock is mine");
-//            System.err.println("Status getl: " + future.get());
-//            
+            System.err.println("Getting and locking the object");
+            OperationFuture<CASValue<Object>> future = client.asyncGetAndLock(key, 30);
+            System.err.println("Status getl: " + future.getStatus());
+            if (!future.getStatus().isSuccess()) {
+                throw new Exception("Error locking!!!!");
+            }
+            System.err.println("Lock is mine");
+            System.err.println("Status getl: " + future.get());
+            
 //            System.err.println("Getting the object");
 //            OperationFuture<CASValue<Object>> future2 = client.asyncGets(key);
 //            System.err.println("Status gets: " + future2.getStatus());

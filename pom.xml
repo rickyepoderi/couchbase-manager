@@ -8,6 +8,26 @@
   <name>couchbase-manager</name>
   <url>https://github.com/rickyepoderi/couchbase-manager</url>
 
+  <profiles>
+    <profile>
+      <id>V3</id>
+      <activation>
+        <activeByDefault>true</activeByDefault>
+      </activation>
+      <properties>
+        <glassfish.version>3.1.2.2</glassfish.version>
+        <exclude.manager>**/CouchbaseManagerStrategyBuilderV4.java</exclude.manager>
+      </properties>
+    </profile>
+    <profile>
+      <id>V4</id>
+      <properties>
+        <glassfish.version>4.0</glassfish.version>
+        <exclude.manager>**/CouchbaseManagerStrategyBuilderV3.java</exclude.manager>
+      </properties>
+    </profile>
+  </profiles>
+
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
   </properties>
@@ -15,7 +35,7 @@
   <repositories>
     <repository>
         <id>glassfish.java.net</id>
-        <url>http://download.java.net/maven/glassfish/</url>
+        <url>https://maven.java.net/content/repositories/releases/</url>
     </repository>
     <repository>
         <id>couchbase.com</id>
@@ -41,15 +61,15 @@
       <scope>provided</scope>
     </dependency>
     <dependency>
-      <groupId>org.glassfish.web</groupId>
+      <groupId>org.glassfish.main.web</groupId>
       <artifactId>web-core</artifactId>
-      <version>3.1.2-SNAPSHOT</version>
+      <version>${glassfish.version}</version>
       <scope>provided</scope>
     </dependency>
     <dependency>
-      <groupId>org.glassfish.web</groupId>
+      <groupId>org.glassfish.main.web</groupId>
       <artifactId>web-glue</artifactId>
-      <version>3.1.2-SNAPSHOT</version>
+      <version>${glassfish.version}</version>
       <scope>provided</scope>
     </dependency>
     <dependency>
@@ -67,6 +87,9 @@
         <artifactId>maven-compiler-plugin</artifactId>
         <version>3.1</version>
         <configuration>
+          <excludes>
+            <exclude>${exclude.manager}</exclude>
+          </excludes>
           <source>6</source>
           <target>6</target>
         </configuration>
@@ -94,6 +117,13 @@
               <value>http://localhost:8080/manager-test/SessionTest?wsdl</value>
             </property>
           </systemProperties>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-javadoc-plugin</artifactId>
+        <version>2.9</version>
+        <configuration>
         </configuration>
       </plugin>
     </plugins>
