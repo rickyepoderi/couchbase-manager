@@ -68,8 +68,9 @@ public class Test2 {
 //                throw new Exception("Error unlocking!!!!");
 //            }
             
-            System.err.println("delete");
-            OperationFuture<Boolean> future4 = client.delete(key);
+            System.err.println("delete CAS: " + future.get().getCas());
+            OperationFuture<Boolean> future4 = client.delete(key, future.get().getCas());
+            //OperationFuture<Boolean> future4 = client.delete(key);
             System.err.println("delete: " + future4.getStatus());
             if (!future4.getStatus().isSuccess()) {
                 throw new Exception("Error deleting!!!");

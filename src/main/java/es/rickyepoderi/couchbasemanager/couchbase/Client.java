@@ -253,6 +253,16 @@ public class Client<Data extends ClientData> {
     }
     
     /**
+     * Method to create a delete operation with cas (used when locked).
+     * @param data The data to delete
+     * @param cas The cas of the get
+     * @return The request of this operation
+     */
+    public ClientRequest delete(Data data, long cas) {
+        return ClientRequest.createDelete(client.delete(data.getId(), cas));
+    }
+    
+    /**
      * Method to create a unlock operation.
      * @param data The data to unlock
      * @param cas The cas previously read

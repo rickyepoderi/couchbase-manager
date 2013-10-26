@@ -844,11 +844,12 @@ public class CouchbaseManager extends StandardManager {
         log.log(Level.FINE, "CouchbaseManager.doSessionDelete(Session,ExecOnCompletion): init {0} {1}", 
                 new Object[]{session.toString(), exec});
         session.waitOnExecution();
-        if (session.isLocked() && !this.isSticky()) {
-            // TODO: cannot be deleted if locked (why????)
-            doSessionUnlock(session, null);
+        ClientRequest req;
+        if (this.isSticky()) {
+            req = client.delete(session);
+        } else {
+            req = client.delete(session, session.getCas());
         }
-        ClientRequest req = client.delete(session);
         if (exec == null) {
             ClientResult res = client.waitForCompletion(req, this.operationTimeout);
             if (!res.isSuccess()) {
