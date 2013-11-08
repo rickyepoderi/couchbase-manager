@@ -43,6 +43,7 @@ import java.net.URI;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.logging.Level;
 import java.util.logging.Logger;
 import net.spy.memcached.PersistTo;
 import net.spy.memcached.ReplicateTo;
@@ -181,6 +182,9 @@ public class Client<Data extends ClientData> {
     public ClientResult waitForCompletion(ClientRequest request, long timeout) {
         ClientResult response = request.waitForCompletion(timeout);
         if (response.isSuccess() && response.getCas() != -1 && (request.isOperation() || request.isCAS())) {
+            // assure that all operations (set, cas, delete, add are waited)
+            log.log(Level.FINE, "Doing the observePoll: {0} - {1}", 
+                    new Object[]{request.getType(), response.getCas()});
             client.observePoll(response.getKey(), response.getCas(), 
                     persistTo, replicateTo, 
                     request.getType().equals(OperationType.DELETE));

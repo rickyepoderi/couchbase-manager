@@ -173,6 +173,7 @@ public class ClientResult {
         try {
             CASResponse cas = future.get(timeout, TimeUnit.MILLISECONDS);
             res.key = future.getKey();
+            res.cas = future.getCas();
             if (CASResponse.OK.equals(cas)) {
                 res.status = new OperationStatus(true, "CAS OK!");
             } else if (CASResponse.NOT_FOUND.equals(cas)) {
