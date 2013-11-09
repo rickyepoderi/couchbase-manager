@@ -35,7 +35,6 @@
  */
 package es.rickyepoderi.couchbasemanager.couchbase;
 
-import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import net.spy.memcached.CASResponse;
 import net.spy.memcached.CASValue;
@@ -170,12 +169,13 @@ public class ClientResult {
         ClientResult res = new ClientResult(type);
         res.cas = -1;
         res.value = null;
+        res.key = null;
         try {
             CASResponse cas = future.get(timeout, TimeUnit.MILLISECONDS);
-            res.key = future.getKey();
-            res.cas = future.getCas();
             if (CASResponse.OK.equals(cas)) {
                 res.status = new OperationStatus(true, "CAS OK!");
+                res.key = future.getKey();
+                res.cas = future.getCas();
             } else if (CASResponse.NOT_FOUND.equals(cas)) {
                 res.status = new OperationStatus(false, "NOT_FOUND");
             } else if (CASResponse.EXISTS.equals(cas)) {
@@ -200,14 +200,18 @@ public class ClientResult {
      */
     protected static ClientResult createClientResultOperation(long timeout, OperationType type, OperationFuture<Boolean> future) {
         ClientResult res = new ClientResult(type);
-        if (!OperationType.UNLOCK.equals(type) && !OperationType.TOUCH.equals(type)) {
-            res.cas = future.getCas();
-        }
         res.value = null;
+        res.cas = -1;
+        res.key = null;
         try {
             future.get(timeout, TimeUnit.MILLISECONDS);
             res.status = future.getStatus();
-            res.key = future.getKey();
+            if (res.status.isSuccess()) {
+                if (!OperationType.UNLOCK.equals(type) && !OperationType.TOUCH.equals(type)) {
+                    res.cas = future.getCas();
+                }
+                res.key = future.getKey();
+            }
         } catch (Exception e) {
             res.status = EXCEPTION;
             res.exception = e;

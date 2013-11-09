@@ -57,9 +57,8 @@ import org.apache.catalina.session.StandardSession;
  * <li>lockForeground and lockBackground when non-sticky methods
  * perform a real locking in couchbase (no other server will modify the
  * session). When the session is released (unlock methods) session is saved
- * in the repository (saved and unlocked if dirty, only touched and unlocked
- * if only accessed). In sticky no lock/unlock is done in couchbase and session
- * is not read again and only saved/touched at unlock.</li>
+ * in the repository. In sticky no lock/unlock is done in couchbase and session
+ * is not read again and only saved at unlock.</li>
  * <li>Expiration is managed locally (to save external calls) but real 
  * expiration occurs when the session disappears from the repository.
  * Expiration is also managed by couchbase.</li>
@@ -89,14 +88,6 @@ import org.apache.catalina.session.StandardSession;
  *   <li>ERROR: Some error loading the session (unknown state). This state
  *       is used to mark a re-read from couchbase, it is used when errors
  *       founds (background save/touch produces an error to be omitted).</li>
- *   </ul>
- * </li>
- * <li>The activity or accessed status. This status is the one check in order
- *     to save, touch and unlock the session when released.
- *   <ul>
- *   <li>CLEAN: The session is not modified.</li>
- *   <li>ACCESSED: The session is marked as accessed.</li>
- *   <li>DIRTY: The session is dirty (attributes have been modified).</lI>
  *   </ul>
  * </li>
  * </ul>
@@ -143,17 +134,6 @@ public class CouchbaseWrapperSession extends StandardSession
     };
     
     /**
-     * Enum class that marks the status of the session in the access point 
-     * of view: CLEAN (not modified), ACCESSED (not modified but accessed),
-     * DIRTY (accessed and modified).
-     */
-    protected static enum SessionAccessStatus {
-        CLEAN, 
-        ACCESSED, 
-        DIRTY
-    };
-    
-    /**
      * logger for the class
      */
     protected static final Logger log = Logger.getLogger(CouchbaseWrapperSession.class.getName());
@@ -178,20 +158,9 @@ public class CouchbaseWrapperSession extends StandardSession
     protected transient SessionMemStatus mstatus = SessionMemStatus.NOT_LOADED;
     
     /**
-     * Status of the session in the access point of view.
-     */
-    protected transient SessionAccessStatus astatus = SessionAccessStatus.DIRTY;
-    
-    /**
      * Number of times the session has been foreground locked.
      */
     protected transient int numForegroundLocks = 0;
-    
-    /**
-     * The access time stored in repo. This is used to save the session when
-     * accessed if there is a big difference between both timestamps.
-     */
-    protected transient long repoAccessedTime = -1;
     
     /**
      * Request that is being processed. The request that is processed in the
@@ -213,7 +182,6 @@ public class CouchbaseWrapperSession extends StandardSession
         super(manager);
         this.cas = -1;
         this.mstatus = SessionMemStatus.NOT_LOADED;
-        this.astatus = SessionAccessStatus.DIRTY;
         this.numForegroundLocks = 0;
         log.log(Level.FINE, "CouchbaseWrapperSession.constructor(Manager): init {0}", manager);
     }
@@ -269,22 +237,6 @@ public class CouchbaseWrapperSession extends StandardSession
     public void setMemStatus(SessionMemStatus status) {
         this.mstatus = status;
     }
-
-    /**
-     * Get the access or activity status.
-     * @return The access status
-     */
-    public SessionAccessStatus getAccesStatus() {
-        return astatus;
-    }
-
-    /**
-     * Set a new access status
-     * @param astatus The new status
-     */
-    public void setAccessStatus(SessionAccessStatus astatus) {
-        this.astatus = astatus;
-    }
     
     public ClientRequest getClientRequest() {
         return this.req;
@@ -326,13 +278,8 @@ public class CouchbaseWrapperSession extends StandardSession
      * next request-
      */
     synchronized protected void clear() {
-        if (!((CouchbaseManager)manager).isSticky()) {
-            // only clear if non-sticky
-            this.repoAccessedTime = -1;
-        }
         this.cas = -1;
         setMemStatus(SessionMemStatus.NOT_LOADED);
-        this.astatus = SessionAccessStatus.CLEAN;
     }
     
     /**
@@ -364,8 +311,6 @@ public class CouchbaseWrapperSession extends StandardSession
                     .createFailOveredPrincipal(loaded.username);
             this.setPrincipal(p);
         }
-        // the repo access time is set to the read one
-        this.repoAccessedTime = loaded.thisAccessedTime;
         // set accessed time only if greater
         if (loaded.thisAccessedTime > this.thisAccessedTime) {
             this.thisAccessedTime = loaded.thisAccessedTime;
@@ -394,36 +339,11 @@ public class CouchbaseWrapperSession extends StandardSession
      */
     synchronized protected void doSave() {
         if (this.isLocked()) {
-            log.log(Level.FINE, "CouchbaseWrapperSession.doSave(): init {0} {1}", 
-                    new Object[] {this.astatus, this.thisAccessedTime - this.repoAccessedTime});
-            if (SessionAccessStatus.DIRTY.equals(this.astatus) ||
-                    (SessionAccessStatus.ACCESSED.equals(this.astatus) && 
-                    (this.thisAccessedTime - this.repoAccessedTime >= ((CouchbaseManager) manager).getMaxAccessTimeNotSaving()))) {
-                // session saved if modified or long time not accessed
-                req = ((CouchbaseManager) manager).doSessionSave(this,
-                        new OperationComplete(this));
-                // set the repoAccessedTime to the one saved one
-                // it is only used when sticky otherwise it is set in load/fill
-                this.repoAccessedTime = this.thisAccessedTime;
-            } else {
-                if (((CouchbaseManager) manager).isSticky()) {
-                    // sticky configuration just touch if accessed
-                    if (SessionAccessStatus.ACCESSED.equals(this.astatus)) {
-                        req = ((CouchbaseManager) manager).doSessionTouch(this,
-                                new OperationComplete(this));
-                    }
-                } else {
-                    // non-sticky, touch if accessed and always unlock
-                    // TODO: why not and unlockAndTouch or touchAndUnlock
-                    if (SessionAccessStatus.ACCESSED.equals(this.astatus)) {
-                        ((CouchbaseManager) manager).doSessionTouch(this, null);
-                    }
-                    if (!((CouchbaseManager) manager).isSticky()) {
-                        req = ((CouchbaseManager) manager).doSessionUnlock(this,
-                                new OperationComplete(this));
-                    }
-                }
-            }
+            log.log(Level.FINE, "CouchbaseWrapperSession.doSave(): init");
+            // session saved if modified or long time not accessed
+            req = ((CouchbaseManager) manager).doSessionSave(this,
+                    new OperationComplete(this));
+
         }
         // clear transient vars
         this.clear();
@@ -702,11 +622,6 @@ public class CouchbaseWrapperSession extends StandardSession
     @Override
     public void access() {
         super.access();
-        synchronized (this) {
-            if (SessionAccessStatus.CLEAN.equals(this.astatus)) {
-                this.astatus = SessionAccessStatus.ACCESSED;
-            }
-        }
     }
     
     /**
@@ -716,9 +631,6 @@ public class CouchbaseWrapperSession extends StandardSession
     @Override
     public void removeAttribute(String name) {
         super.removeAttribute(name);
-        synchronized(this) {
-            this.astatus = SessionAccessStatus.DIRTY;
-        }
     }
 
     /**
@@ -729,9 +641,6 @@ public class CouchbaseWrapperSession extends StandardSession
     @Override
     public void setAttribute(String name, Object value) {
         super.setAttribute(name, value);
-        synchronized(this) {
-            this.astatus = SessionAccessStatus.DIRTY;
-        }
     }
 
     /**
@@ -745,9 +654,6 @@ public class CouchbaseWrapperSession extends StandardSession
     @Override
     public void removeAttribute(String name, boolean notify, boolean checkValid) {
         super.removeAttribute(name, notify, checkValid);
-        synchronized(this) {
-            this.astatus = SessionAccessStatus.DIRTY;
-        }
     }
 
     /**
@@ -760,15 +666,6 @@ public class CouchbaseWrapperSession extends StandardSession
     @Override
     public Object getAttribute(String name) {
         Object attr = super.getAttribute(name);
-        if (!(attr instanceof String)
-                && !(attr instanceof Number)
-                && !(attr instanceof Boolean)) {
-            synchronized (this) {
-                // attribute can be modified inside the application
-                // TODO: A more intelligent method!!!
-                this.astatus = SessionAccessStatus.DIRTY;
-            }
-        }
         return attr;
     }
 

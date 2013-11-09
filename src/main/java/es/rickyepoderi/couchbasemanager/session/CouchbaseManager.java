@@ -182,11 +182,6 @@ public class CouchbaseManager extends StandardManager {
     protected int lockTime = 30;
     
     /**
-     * maximum time to refresh session without saving
-     */
-    protected long maxAccessTimeNotSaving = 300000L;
-    
-    /**
      * maximum time for the operation against couchbase to finish
      */
     protected long operationTimeout = 30000L;
@@ -288,22 +283,6 @@ public class CouchbaseManager extends StandardManager {
      */
     public void setLockTime(int lockTime) {
         this.lockTime = lockTime;
-    }
-
-    /**
-     * Getter for the time without saving.
-     * @return The time to maintain sessions without saving (ms).
-     */
-    public long getMaxAccessTimeNotSaving() {
-        return maxAccessTimeNotSaving;
-    }
-
-    /**
-     * Setter for the time without saving.
-     * @param maxAccessTimeNotSaving The new time in ms.
-     */
-    public void setMaxAccessTimeNotSaving(long maxAccessTimeNotSaving) {
-        this.maxAccessTimeNotSaving = maxAccessTimeNotSaving;
     }
 
     /**
@@ -905,7 +884,7 @@ public class CouchbaseManager extends StandardManager {
      * @param exec If not null the method is executed asynchronously
      * @return the request executing if exec is not null or null is not async
      */
-    public ClientRequest doSessionTouch(CouchbaseWrapperSession session, ExecOnCompletion exec) {
+    /*public ClientRequest doSessionTouch(CouchbaseWrapperSession session, ExecOnCompletion exec) {
         log.log(Level.FINE, "CouchbaseManager.doSessionTouch(Session,ExecOnCompletion): init {0} {1}", 
                 new Object[]{session.toString(), exec});
         session.waitOnExecution();
@@ -924,7 +903,7 @@ public class CouchbaseManager extends StandardManager {
         }
         log.log(Level.FINE, "CouchbaseManager.doSessionTouch(Session,ExecOnCompletion): exit {0}", req);
         return req;
-    }
+    }*/
     
     /**
      * Adds a new session to the couchbase server when a new session is created.

@@ -72,11 +72,6 @@ import net.spy.memcached.ReplicateTo;
  *   <li>lockTime: The amount of time in seconds that a key will be locked 
  *       inside couchbase manager without being released. In current couchbase 
  *       implementation the maximum locktime is 30 seconds. Default 30.</li>
- *   <li>maxTimeNotSaving: The maximum amount of time in minutes that a 
- *       session can only be refreshed without a real saving in couchbase.
- *       when only accessed a session is touched in couchbase, therefore 
- *       internal timestamps are not saved. This property sets a maximum
- *       time, in order to force a save. Default 5.</li>
  *   <li>operationTimeout: The time in milliseconds to wait for any operation
  *       against couchbase to timeout. Default 30000ms (30s).</li>
  *   <li>persistTo: the amount of nodes the item should be persisted to before 
@@ -140,16 +135,6 @@ public abstract class CouchbaseManagerStrategyBuilder extends BasePersistenceStr
     public static final String PROP_LOCK_TIME = "lockTime";
     
     /**
-     * Property that handles the amount of time a sessions could be refreshed
-     * (touched in couchbase) without saving. In normal manager configuration
-     * the session is only touched when no modifications are performed in the
-     * attributes of the session. That means the session timestamps are not
-     * updated inside couchbase. This property assures a saving if session
-     * was not updated in this time.
-     */
-    public static final String PROP_MAX_ACCESS_TIME_NOT_SAVING = "maxTimeNotSaving";
-    
-    /**
      * Property that manages the timeout for any couchbase operation. This 
      * timeout is managed in milliseconds.
      */
@@ -200,11 +185,6 @@ public abstract class CouchbaseManagerStrategyBuilder extends BasePersistenceStr
     protected static final int DEFAULT_LOCK_TIME = 30;
     
     /**
-     * Default max time without saving in couchbase (5 minutes).
-     */
-    protected static final int DEFAULT_MAX_ACCESS_TIME_NOT_SAVING = 5;
-    
-    /**
      * Default operation timeout (30000ms = 30s).
      */
     protected static final long DEFAULT_OPERATION_TIMEOUT = 30000;
@@ -252,11 +232,6 @@ public abstract class CouchbaseManagerStrategyBuilder extends BasePersistenceStr
      * property to manage the lock time.
      */
     protected int lockTime = DEFAULT_LOCK_TIME;
-    
-    /**
-     * property to manage the max time without saving in couchbase.
-     */
-    protected int maxAccessTimeNotSaving = DEFAULT_MAX_ACCESS_TIME_NOT_SAVING;
     
     /**
      * property to control the operation timeout in couchbase calls.

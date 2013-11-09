@@ -118,8 +118,6 @@ public class CouchbaseManagerStrategyBuilderV4 extends CouchbaseManagerStrategyB
         AppSerializingTranscoder transcoder = new AppSerializingTranscoder();
         transcoder.setIoUtils(ioUtils);
         manager.setTranscoder(transcoder);
-        // in configuration is in minutes but in manager in ms
-        manager.setMaxAccessTimeNotSaving(maxAccessTimeNotSaving * 60000L);
         // TODO: set more values
         StandardContext sctx = (StandardContext) ctx;
         if (!sctx.isSessionTimeoutOveridden()) {
@@ -183,17 +181,6 @@ public class CouchbaseManagerStrategyBuilderV4 extends CouchbaseManagerStrategyB
                             }
                         } catch (NumberFormatException e) {
                             log.log(Level.WARNING, "Invalid integer format for lockTime {0}", value);
-                        }
-                    }  else if (name.equalsIgnoreCase(PROP_MAX_ACCESS_TIME_NOT_SAVING)) {
-                        log.log(Level.FINE, "maxAccessTimeNotSaving: {0}", value);
-                        try {
-                            maxAccessTimeNotSaving = Integer.parseInt(value);
-                            if (maxAccessTimeNotSaving < 0) {
-                                log.log(Level.WARNING, "Invalid integer format for maxAccessTimeNotSaving {0}", value);
-                                maxAccessTimeNotSaving = DEFAULT_MAX_ACCESS_TIME_NOT_SAVING;
-                            }
-                        } catch (NumberFormatException e) {
-                            log.log(Level.WARNING, "Invalid integer format for maxAccessTimeNotSaving {0}", value);
                         }
                     }  else if (name.equalsIgnoreCase(PROP_OPERATION_TIMEOUT)) {
                         log.log(Level.FINE, "operationTimeout: {0}", value);
