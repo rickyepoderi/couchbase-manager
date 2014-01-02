@@ -74,9 +74,9 @@ public class ClientResult {
     private long cas = -1;
     
     /**
-     * The object for get operations that return an object.
+     * The serialized object for get operations that return an object.
      */
-    private Object value = null;
+    private byte[] value = null;
     
     /**
      * The key used in the operation.
@@ -118,7 +118,7 @@ public class ClientResult {
      * @param value The object returned by couchbase
      * @param key The key value
      */
-    private ClientResult(OperationType type, OperationStatus status, long cas, Object value, String key) {
+    private ClientResult(OperationType type, OperationStatus status, long cas, byte[] value, String key) {
         this(type);
         this.status = status;
         this.cas = cas;
@@ -142,7 +142,7 @@ public class ClientResult {
             res.key = future.getKey();
             if (res.status.isSuccess()) {
                 res.cas = future.get().getCas();
-                res.value = casValue.getValue();
+                res.value = (byte[]) casValue.getValue();
             } else {
                 res.cas = -1;
                 res.value = null;
@@ -218,6 +218,19 @@ public class ClientResult {
         }
         return res;
     }
+    
+    /**
+     * Constructor for error result.
+     * @param type The type of the operation
+     * @param e The exception
+     * @return The client result in error.
+     */
+    protected static ClientResult createClientResultError(OperationType type, Exception e) {
+        ClientResult res = new ClientResult(type);
+        res.status = EXCEPTION;
+        res.exception = e;
+        return res;
+    }
 
     /**
      * Getter for CAS.
@@ -247,7 +260,7 @@ public class ClientResult {
      * Getter for the object returned by couchbase in get operations.
      * @return The object or null
      */
-    public Object getValue() {
+    public byte[] getValue() {
         return value;
     }
     

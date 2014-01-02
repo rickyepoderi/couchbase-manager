@@ -77,22 +77,15 @@ public class ClientRequest {
         private ExecOnCompletion exec = null;
         
         /**
-         * The timeout to wait for the operation
-         */
-        private long timeout = -1;
-        
-        /**
          * Constructor.
          * @param client The client
          * @param req The request
          * @param exec The code to execute (it can be null)
-         * @param timeout Timeout to wait for the operation to finish (in ms)
          */
-        public Executor(Client client, ClientRequest req, ExecOnCompletion exec, long timeout) {
+        public Executor(Client client, ClientRequest req, ExecOnCompletion exec) {
             this.client = client;
             this.req = req;
             this.exec = exec;
-            this.timeout = timeout;
         }
         
         /**
@@ -109,7 +102,7 @@ public class ClientRequest {
          */
         @Override
         public void run() {
-            res = client.waitForCompletion(req, timeout);
+            res = client.waitForCompletion(req);
             if (exec != null) {
                 exec.execute(res);
             }
@@ -149,7 +142,7 @@ public class ClientRequest {
      * @param type The type of the client
      * @param future The future returned by couchbase
      */
-    private ClientRequest(OperationType type, OperationFuture future) {
+    protected ClientRequest(OperationType type, OperationFuture future) {
         this.type = type;
         if (OperationType.GET_AND_LOCK.equals(type) || OperationType.GETS.equals(type)) {
             this.futureObject = (OperationFuture) future;
@@ -165,7 +158,7 @@ public class ClientRequest {
      * @param future The result of this couchbase operation
      * @return The request
      */
-    public static ClientRequest createGetAndLockResult(OperationFuture<CASValue<Object>> future) {
+    protected static ClientRequest createGetAndLockResult(OperationFuture<CASValue<Object>> future) {
         return new ClientRequest(OperationType.GET_AND_LOCK, future);
     }
     
@@ -174,7 +167,7 @@ public class ClientRequest {
      * @param future The result of this couchbase operation
      * @return The request
      */
-    public static ClientRequest createGets(OperationFuture<CASValue<Object>> future) {
+    protected static ClientRequest createGets(OperationFuture<CASValue<Object>> future) {
         return new ClientRequest(OperationType.GETS, future);
     }
     
@@ -183,7 +176,7 @@ public class ClientRequest {
      * @param future The result of this couchbase operation
      * @return The request
      */
-    public static ClientRequest createSet(OperationFuture<Boolean> future) {
+    protected static ClientRequest createSet(OperationFuture<Boolean> future) {
         return new ClientRequest(OperationType.SET, future);
     }
     
@@ -192,7 +185,7 @@ public class ClientRequest {
      * @param future The result of this couchbase operation
      * @return The request
      */
-    public static ClientRequest createCas(OperationFuture<CASResponse> future) {
+    protected static ClientRequest createCas(OperationFuture<CASResponse> future) {
         return new ClientRequest(OperationType.CAS, future);
     }
     
@@ -201,7 +194,7 @@ public class ClientRequest {
      * @param future The result of this couchbase operation
      * @return The request
      */
-    public static ClientRequest createDelete(OperationFuture<Boolean> future) {
+    protected static ClientRequest createDelete(OperationFuture<Boolean> future) {
         return new ClientRequest(OperationType.DELETE, future);
     }
     
@@ -210,7 +203,7 @@ public class ClientRequest {
      * @param future The result of this couchbase operation
      * @return The request
      */
-    public static ClientRequest createUnlock(OperationFuture<Boolean> future) {
+    protected static ClientRequest createUnlock(OperationFuture<Boolean> future) {
         return new ClientRequest(OperationType.UNLOCK, future);
     }
     
@@ -219,7 +212,7 @@ public class ClientRequest {
      * @param future The result of this couchbase operation
      * @return The request
      */
-    public static ClientRequest createTouch(OperationFuture<Boolean> future) {
+    protected static ClientRequest createTouch(OperationFuture<Boolean> future) {
         return new ClientRequest(OperationType.TOUCH, future);
     }
     
@@ -228,7 +221,7 @@ public class ClientRequest {
      * @param future The result of this couchbase operation
      * @return The request
      */
-    public static ClientRequest createAdd(OperationFuture<Boolean> future) {
+    protected static ClientRequest createAdd(OperationFuture<Boolean> future) {
         return new ClientRequest(OperationType.ADD, future);
     }
 
@@ -310,12 +303,11 @@ public class ClientRequest {
      * Executes the operation asynch but after it is finished a code is
      * executed. This method uses an internal thread.
      * @param client The client to be used to wait for the operation
-     * @param timeout Timeout to wait for the operation to finish (in ms)
      * @param exec The code to execute at finishing
      */
-    protected void execOnCompletion(Client client, long timeout, ExecOnCompletion exec) {
+    protected void execOnCompletion(Client client, ExecOnCompletion exec) {
         if (thread == null) {
-            thread = new Thread(new Executor(client, this, exec, timeout));
+            thread = new Thread(new Executor(client, this, exec));
             thread.start();
         }
     }

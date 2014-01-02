@@ -47,7 +47,7 @@ import org.testng.annotations.Test;
  */
 public class WebServicesTest {
 
-    private Tester test;
+    private final Tester test;
 
     @Parameters({ "baseUrl" })
     public WebServicesTest(String baseUrl) {
@@ -133,10 +133,39 @@ public class WebServicesTest {
         test.printResults();
         Assert.assertEquals(test.getTotalErrors(), 0L);
     }
+    
+    @Test(groups = "external")
+    public void test07ExternalWithSleep() throws Exception {
+        System.out.println("** test07ExternalWithSleep **");
+        test.setNumThreads(1);
+        test.setNumChildThreads(1);
+        test.setIterations(50);
+        test.setChildIterations(50);
+        test.setThreadSleep(100);
+        test.setSizeAttr(12000);
+        test.test();
+        test.printResults();
+        Assert.assertEquals(test.getTotalErrors(), 0L);
+    }
 
+    @Test(groups = "external")
+    public void test08ExternalWithoutSleep() throws Exception {
+        System.out.println("** test08ExternalWithoutSleep **");
+        test.setNumThreads(1);
+        test.setNumChildThreads(1);
+        test.setIterations(50);
+        test.setChildIterations(50);
+        test.setThreadSleep(0);
+        test.setSizeAttr(12000);
+        test.test();
+        test.printResults();
+        Assert.assertEquals(test.getTotalErrors(), 0L);
+    }
+
+    /*
     @Test(groups = "performance")
-    public void test07Performance1() throws Exception {
-        System.out.println("** test07Performance1 **");
+    public void test21Performance1() throws Exception {
+        System.out.println("** test21Performance1 **");
         test.setNumThreads(16);
         test.setNumChildThreads(1);
         test.setIterations(20);
@@ -148,11 +177,11 @@ public class WebServicesTest {
         test.printResults();
         Assert.assertEquals(test.getTotalErrors(), 0L);
         Thread.sleep(150000);
-    }
+    }*/
 
     @Test(groups = "performance")
-    public void test08Performance2() throws Exception {
-        System.out.println("** test08Performance2 **");
+    public void test22Performance2() throws Exception {
+        System.out.println("** test22Performance2 **");
         test.setNumThreads(16);
         test.setNumChildThreads(1);
         test.setIterations(20);
@@ -166,9 +195,10 @@ public class WebServicesTest {
         Thread.sleep(150000);
     }
 
+    /*
     @Test(groups = "performance")
-    public void test09Performance3() throws Exception {
-        System.out.println("** test09Performance3 **");
+    public void test23Performance3() throws Exception {
+        System.out.println("** test23Performance3 **");
         test.setNumThreads(16);
         test.setNumChildThreads(1);
         test.setIterations(20);
@@ -180,11 +210,11 @@ public class WebServicesTest {
         test.printResults();
         Assert.assertEquals(test.getTotalErrors(), 0L);
         Thread.sleep(150000);
-    }
+    }*/
 
     @Test(groups = "performance")
-    public void test10Performance4() throws Exception {
-        System.out.println("** test10Performance4 **");
+    public void test24Performance4() throws Exception {
+        System.out.println("** test24Performance4 **");
         test.setNumThreads(16);
         test.setNumChildThreads(1);
         test.setIterations(20);
@@ -192,6 +222,40 @@ public class WebServicesTest {
         test.setThreadSleep(500);
         test.setNumAttrs(20);
         test.setSizeAttr(200);
+        test.test();
+        test.printResults();
+        Assert.assertEquals(test.getTotalErrors(), 0L);
+        Thread.sleep(150000);
+    }
+    
+    @Test(groups = "performance")
+    public void test25Performance5() throws Exception {
+        System.out.println("** test25Performance5 **");
+        test.setNumThreads(16);
+        test.setNumChildThreads(1);
+        test.setIterations(20);
+        test.setChildIterations(50);
+        test.setThreadSleep(500);
+        test.setNumAttrs(10);
+        test.setSizeAttr(12000);
+        test.setUpdateAttributes(1);
+        test.test();
+        test.printResults();
+        Assert.assertEquals(test.getTotalErrors(), 0L);
+        Thread.sleep(150000);
+    }
+    
+    @Test(groups = "performance")
+    public void test26Performance6() throws Exception {
+        System.out.println("** test26Performance6 **");
+        test.setNumThreads(16);
+        test.setNumChildThreads(1);
+        test.setIterations(20);
+        test.setChildIterations(50);
+        test.setThreadSleep(500);
+        test.setNumAttrs(10);
+        test.setSizeAttr(12000);
+        test.setUpdateAttributes(10);
         test.test();
         test.printResults();
         Assert.assertEquals(test.getTotalErrors(), 0L);

@@ -33,51 +33,15 @@
  * Project: github.com/rickyepoderi/couchbase-manager
  * 
  */
-package es.rickyepoderi.couchbasemanager.couchbase;
+package es.rickyepoderi.couchbasemanager.io;
 
-import com.couchbase.client.CouchbaseConnectionFactory;
-import java.io.IOException;
-import java.net.URI;
-import java.util.List;
-import net.spy.memcached.transcoders.Transcoder;
+import java.io.Serializable;
 
 /**
- *
- * <p>Simple couchbase factory to use a specific transcoder. The transcoder
- * is used all the time, so it should be support multi thread access.</p>
+ * <p>Class that only represents a null object when saved in couchbase.</p>
  * 
  * @author ricky
  */
-public class AppCouchbaseConnectionFactory extends CouchbaseConnectionFactory {
-    
-    /**
-     * The transcoder to use.
-     */
-    private Transcoder<Object> transcoder = null;
-    
-    /**
-     * Constructor using the super parameters plus the transcoder.
-     * @param baseList The list of couchbase servers
-     * @param bucketName The bucket name to use
-     * @param password The password to use
-     * @param transcoder The transcoder to use
-     * @throws IOException  Some error initializing the factory
-     */
-    public AppCouchbaseConnectionFactory(final List<URI> baseList,
-      final String bucketName, String password, Transcoder transcoder) throws IOException {
-        super(baseList, bucketName, password);
-        this.transcoder = transcoder;
-    }
-
-    /**
-     * Getter for the transcoder. It is overridden cos it is the only way 
-     * of returning another transcoder to the default one.
-     * @return The transcoder of the factory
-     */
-    @Override
-    public Transcoder<Object> getDefaultTranscoder() {
-        return transcoder;
-    }
-    
+final public class NullObject implements Serializable {
     
 }

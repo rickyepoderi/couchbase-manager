@@ -1,37 +1,6 @@
-/***
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
- *    
- * Linking this library statically or dynamically with other modules 
- * is making a combined work based on this library. Thus, the terms and
- * conditions of the GNU General Public License cover the whole
- * combination.
- *    
- * As a special exception, the copyright holders of this library give 
- * you permission to link this library with independent modules to 
- * produce an executable, regardless of the license terms of these 
- * independent modules, and to copy and distribute the resulting 
- * executable under terms of your choice, provided that you also meet, 
- * for each linked independent module, the terms and conditions of the 
- * license of that module.  An independent module is a module which 
- * is not derived from or based on this library.  If you modify this 
- * library, you may extend this exception to your version of the 
- * library, but you are not obligated to do so.  If you do not wish 
- * to do so, delete this exception statement from your version.
- *
- * Project: github.com/rickyepoderi/couchbase-manager
- * 
+/*
+ * To change this template, choose Tools | Templates
+ * and open the template in the editor.
  */
 package es.rickyepoderi.managertest.client;
 
@@ -44,9 +13,7 @@ import javax.xml.namespace.QName;
 import javax.xml.ws.BindingProvider;
 
 /**
- * <p>Tester for the web services of the manager-test application. It lets us
- * test the couchbase manager using web services.</p>
- * 
+ *
  * @author ricky
  */
 public class Tester {
@@ -61,12 +28,13 @@ public class Tester {
     public static final int DEFAULT_NUMBER_ATTRIBUTES = 10;
     public static final int DEFAULT_SIZE_ATTRIBUTE = 100;
     
-    public static final int DEFAULT_UPDATE_RATIO = 50;
     public static final int DEFAULT_OPERATION_SLEEP_TIME = 0;
     public static final int DEFAULT_THREAD_SLEEP_TIME = 0;
     
     public static final int DEFAULT_ITERATIONS = 1;
     public static final int DEFAULT_CHILD_ITERATIONS = 1;
+    
+    public static final int DEFAULT_UPDATE_ATTRIBUTES = 1;
     
     private String baseUrl = DEFAULT_BASE_URL;
     private String namespace = DEFAULT_NAMESPACE;
@@ -78,16 +46,17 @@ public class Tester {
     private int numAttrs = DEFAULT_NUMBER_ATTRIBUTES;
     private int sizeAttr = DEFAULT_SIZE_ATTRIBUTE;
     
-    private int updateRatio = DEFAULT_UPDATE_RATIO;
     private int operationSleep = DEFAULT_OPERATION_SLEEP_TIME;
     private int threadSleep = DEFAULT_THREAD_SLEEP_TIME;
     
     private int iterations = DEFAULT_ITERATIONS;
     private int childIterations = DEFAULT_CHILD_ITERATIONS;
     
+    private int updateAttributes = DEFAULT_UPDATE_ATTRIBUTES;
+    
     private boolean debug = false;
     
-    public enum OperationType {CREATE, UPDATE, REFRESH, DELETE};
+    public enum OperationType {CREATE, UPDATE, DELETE};
     
     private long statCount[] = new long[OperationType.values().length];
     private double statSum[] = new double[OperationType.values().length];
@@ -98,10 +67,10 @@ public class Tester {
     private static SimpleDateFormat format = new SimpleDateFormat("hh:mm:ss.SSS");
     
     public class OperationResult {
-        private long error;
-        private long count;
-        private double mean;
-        private double dev;
+        private final long error;
+        private final long count;
+        private final double mean;
+        private final double dev;
 
         protected OperationResult() {
             this.error = 0;
@@ -150,11 +119,7 @@ public class Tester {
         @Override
         public void run() {
             while (iters < childIterations) {
-                if (random.nextInt(100) < updateRatio) {
-                    performOperation(parent, this, OperationType.UPDATE, proxy, random);
-                } else {
-                    performOperation(parent, this, OperationType.REFRESH, proxy, random);
-                }
+                performOperation(parent, this, OperationType.UPDATE, proxy, random);
                 iters++;
             }
         }
@@ -167,6 +132,7 @@ public class Tester {
         private SessionTest_Service service = null;
         private ExecutorChild[] children = null;
         private int iters = 0;
+        private Random random = null;
         
         public ExecutorParent() throws MalformedURLException {
             this.service = new SessionTest_Service(
@@ -175,24 +141,27 @@ public class Tester {
             this.proxy = service.getSessionTestPort();
             ((BindingProvider)this.proxy).getRequestContext().put(BindingProvider.SESSION_MAINTAIN_PROPERTY, Boolean.TRUE);
             this.iters = 0;
+            this.random = new Random();
         }
 
         @Override
         public void run() {
             while (iters < iterations) {
                 // create the session
-                performOperation(this, null, OperationType.CREATE, proxy, null);
+                performOperation(this, null, OperationType.CREATE, proxy, random);
                 // create childs
                 children = new ExecutorChild[numChildThreads];
                 for (int i = 0; i < children.length; i++) {
                     children[i] = new ExecutorChild(proxy, this);
                     children[i].start();
                 }
-                for (int i = 0; i < children.length; i++) {
-                    try {children[i].join();} catch(Exception e) {}
+                for (ExecutorChild children1 : children) {
+                    try {
+                        children1.join();
+                    } catch(InterruptedException e) {}
                 }
                 // delete the session
-                performOperation(this, null, OperationType.DELETE, proxy, null);
+                performOperation(this, null, OperationType.DELETE, proxy, random);
                 iters++;
             }
         }
@@ -276,14 +245,6 @@ public class Tester {
         this.sizeAttr = sizeAttr;
     }
 
-    public int getUpdateRatio() {
-        return updateRatio;
-    }
-
-    public void setUpdateRatio(int updateRatio) {
-        this.updateRatio = updateRatio;
-    }
-
     public int getOperationSleep() {
         return operationSleep;
     }
@@ -327,6 +288,14 @@ public class Tester {
     public OperationResult getResult(OperationType type) {
         return this.results[type.ordinal()];
     }
+
+    public int getUpdateAttributes() {
+        return updateAttributes;
+    }
+
+    public void setUpdateAttributes(int updateAttributes) {
+        this.updateAttributes = updateAttributes;
+    }
     
     public long getTotalErrors() {
         long totalErrors = 0;
@@ -363,7 +332,7 @@ public class Tester {
     synchronized private void calculateStats(String result, OperationType type, long sample) {
         //System.err.println(type + ": " + sample);
         int idx = type.ordinal();
-        if (result.contains("ERROR")) {
+        if (result == null || result.contains("ERROR")) {
             errors[idx]++;
         }
         statCount[idx]++;
@@ -397,12 +366,12 @@ public class Tester {
                 .append(" -ct ").append(numChildThreads)
                 .append(" -a ").append(numAttrs)
                 .append(" -s ").append(sizeAttr)
-                .append(" -ur ").append(updateRatio)
                 .append(" -os ").append(operationSleep)
                 .append(" -ts ").append(threadSleep)
                 .append(" -i ").append(iterations)
                 .append(" -ci ").append(childIterations)
                 .append(" -d ").append(debug)
+                .append(" -u ").append(updateAttributes)
                 .toString();
     }
     
@@ -434,10 +403,9 @@ public class Tester {
      */
     private void performOperation(ExecutorParent p, ExecutorChild c, 
             OperationType type, SessionTest proxy, Random random) {
-        StringBuilder sb = null;
+        StringBuilder sb = new StringBuilder();
         if (debug) {
-            sb = new StringBuilder()
-                    .append(format.format(new Date()))
+            sb = sb.append(format.format(new Date()))
                     .append(" (")
                     .append(p.getClass().getSimpleName())
                     .append("-")
@@ -450,17 +418,20 @@ public class Tester {
         long start = System.currentTimeMillis();
         String res = null;
         try {
+            byte[] value = new byte[1];
+            random.nextBytes(value);
             if (OperationType.UPDATE.equals(type)) {
-                res = proxy.updateSession(random.nextInt(numAttrs), sizeAttr, operationSleep);
-            } else if (OperationType.REFRESH.equals(type)) {
-                res = proxy.refreshSession(operationSleep);
+                res = proxy.updateSeveralSession(updateAttributes, value[0], operationSleep);
             } else if (OperationType.CREATE.equals(type)) {
-                res = proxy.createSession(numAttrs, sizeAttr);
+                res = proxy.createSession(numAttrs, sizeAttr, value[0], operationSleep);
             } else if (OperationType.DELETE.equals(type)) {
-                res = proxy.deleteSession();
+                res = proxy.deleteSession(operationSleep);
+            }
+            if (res == null) {
+                res = "ERROR client: null result!!!";
             }
         } catch (Exception e) {
-            res = "ERROR client: Exception doing operation!!!";
+            res = "ERROR client: Exception doing operation - " + e.getMessage();
         }
         long time = System.currentTimeMillis() - start;
         calculateStats(res, type, time);
@@ -471,7 +442,7 @@ public class Tester {
         if (threadSleep > 0) {
             try {
                 Thread.sleep(threadSleep);
-            } catch (Exception e) {
+            } catch (InterruptedException e) {
             }
         }
     }
@@ -527,10 +498,6 @@ public class Tester {
         sb.append(")");
         sb.append(System.getProperty("line.separator"));
         
-        sb.append("  -ur: Ratio (percentage) of updates 0-100 (default: ");
-        sb.append(DEFAULT_UPDATE_RATIO);
-        sb.append(")");
-        sb.append(System.getProperty("line.separator"));
         sb.append("  -os: Sleep time inside operation in ms (default: ");
         sb.append(DEFAULT_OPERATION_SLEEP_TIME);
         sb.append(")");
@@ -546,6 +513,11 @@ public class Tester {
         sb.append(System.getProperty("line.separator"));
         sb.append("  -ci: Number of iterations/operations for each parent iteration (default: ");
         sb.append(DEFAULT_CHILD_ITERATIONS);
+        sb.append(")");
+        sb.append(System.getProperty("line.separator"));
+        
+        sb.append("  -u: Number of attributes to update in each operation (default: ");
+        sb.append(DEFAULT_UPDATE_ATTRIBUTES);
         sb.append(")");
         sb.append(System.getProperty("line.separator"));
         
@@ -619,8 +591,6 @@ public class Tester {
                 numAttrs = checkIntegerArgument("-a", args, i+1, 1, Integer.MAX_VALUE);
             } else if ("-s".equals(args[i])) {
                 sizeAttr = checkIntegerArgument("-s", args, i+1, 1, Integer.MAX_VALUE);
-            } else if ("-ur".equals(args[i])) {
-                updateRatio = checkIntegerArgument("-ur", args, i+1, 0, 100);
             } else if ("-os".equals(args[i])) {
                 operationSleep = checkIntegerArgument("-os", args, i+1, 0, Integer.MAX_VALUE);
             } else if ("-ts".equals(args[i])) {
@@ -629,6 +599,8 @@ public class Tester {
                 iterations = checkIntegerArgument("-i", args, i+1, 1, Integer.MAX_VALUE);
             } else if ("-ci".equals(args[i])) {
                 childIterations = checkIntegerArgument("-ci", args, i+1, 1, Integer.MAX_VALUE);
+            } else if ("-u".equals(args[i])) {
+                updateAttributes = checkIntegerArgument("-u", args, i+1, 0, Integer.MAX_VALUE);
             } else if ("-d".equals(args[i])) {
                 debug = true;
                 i--;
@@ -650,10 +622,10 @@ public class Tester {
             threads[i] = new ExecutorParent();
             threads[i].start();
         }
-        for (int i = 0; i < threads.length; i++) {
+        for (ExecutorParent thread : threads) {
             try {
-                threads[i].join();
-            } catch (Exception e) {
+                thread.join();
+            }catch (InterruptedException e) {
             }
         }
         this.calculateResults();

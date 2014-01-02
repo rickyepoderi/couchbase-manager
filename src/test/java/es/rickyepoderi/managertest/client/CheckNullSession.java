@@ -7,15 +7,16 @@ import javax.xml.bind.annotation.XmlType;
 
 
 /**
- * <p>Java class for deleteSession complex type.
+ * <p>Java class for checkNullSession complex type.
  * 
  * <p>The following schema fragment specifies the expected content contained within this class.
  * 
  * <pre>
- * &lt;complexType name="deleteSession">
+ * &lt;complexType name="checkNullSession">
  *   &lt;complexContent>
  *     &lt;restriction base="{http://www.w3.org/2001/XMLSchema}anyType">
  *       &lt;sequence>
+ *         &lt;element name="num" type="{http://www.w3.org/2001/XMLSchema}int"/>
  *         &lt;element name="sleep" type="{http://www.w3.org/2001/XMLSchema}int"/>
  *       &lt;/sequence>
  *     &lt;/restriction>
@@ -26,12 +27,30 @@ import javax.xml.bind.annotation.XmlType;
  * 
  */
 @XmlAccessorType(XmlAccessType.FIELD)
-@XmlType(name = "deleteSession", propOrder = {
+@XmlType(name = "checkNullSession", propOrder = {
+    "num",
     "sleep"
 })
-public class DeleteSession {
+public class CheckNullSession {
 
+    protected int num;
     protected int sleep;
+
+    /**
+     * Gets the value of the num property.
+     * 
+     */
+    public int getNum() {
+        return num;
+    }
+
+    /**
+     * Sets the value of the num property.
+     * 
+     */
+    public void setNum(int value) {
+        this.num = value;
+    }
 
     /**
      * Gets the value of the sleep property.

@@ -35,11 +35,12 @@
  */
 package es.rickyepoderi.couchbasemanager.session;
 
+import es.rickyepoderi.couchbasemanager.couchbase.BulkClientRequest;
 import es.rickyepoderi.couchbasemanager.couchbase.Client;
-import es.rickyepoderi.couchbasemanager.couchbase.ClientRequest;
 import es.rickyepoderi.couchbasemanager.couchbase.ClientResult;
 import es.rickyepoderi.couchbasemanager.couchbase.ExecOnCompletion;
-import es.rickyepoderi.couchbasemanager.couchbase.transcoders.AppSerializingTranscoder;
+import es.rickyepoderi.couchbasemanager.couchbase.transcoders.GlassfishTranscoderUtil;
+import es.rickyepoderi.couchbasemanager.couchbase.transcoders.TranscoderUtil;
 import es.rickyepoderi.couchbasemanager.session.CouchbaseWrapperSession.SessionMemStatus;
 import java.io.IOException;
 import java.io.InputStream;
@@ -73,13 +74,12 @@ import org.apache.catalina.session.StandardManager;
  * <li>Sessions are also stored in normal Map of StandardManager but
  * the session is cleared when not used (cleared means attributes are
  * removed). Again only when non-sticky.</li>
- * <li>The majority of this process lays inside MemWrapperSession implementation.
+ * <li>The majority of this process lays inside CouchbaseWrapperSession implementation.
  * This special session clears its content inside unlock methods and loads it
  * from the memory repository in lock ones. In sticky process lock/unlock
  * is locally managed and the session is not read again or locked.</li>
- * <li>MemWrapperSession uses a activity status flag to record any attribute 
- * modification. If the session is dirty it is saved in the external repository, 
- * if accessed just touched. Obviously session is always unlocked if non-sticky.</li>
+ * <li>MemWrapperSession set (sticky) or cas (non-sticky) itself into couchbase 
+ * after it is released.</li>
  * <li>Expiration is managed by the repository too. Although the processExpires
  * of the StandardManager is used. The MemWrapperSession always checks 
  * external repository to check definitely expiration. Trying to minimize
@@ -106,6 +106,9 @@ import org.apache.catalina.session.StandardManager;
  * RuntimeException). Cos async calls are done in the background a error status
  * of the session makes the session to be read (compulsory, no matter sticky
  * or non-sticky). This way a couchbase error is managed.</li>
+ * <li>Version 0.4 adds external attributes. Those attributes are values
+ * that are stored as another object in couchbase. At the moment big values
+ * (attrMaxSize property) are stored separately as external.</li>
  * </ul>
  * 
  * <p>Restrictions in the implementation:</p>
@@ -117,10 +120,6 @@ import org.apache.catalina.session.StandardManager;
  * access and there is no need of pooling. For the moment a single connection
  * is used.</li>
  * <li>The single connection seems to support reconnection. Not checked.</li>
- * <li>Right now if session is not modified it should be unlocked and 
- * touched, but now couchbase client needs two methods to do that (touch
- * and unlock). It would be nice if a touchAndUnlock exists.</li>
- * <li>Same way when session is locked cannot be deleted.</li>
  * </ul>
  * 
  * @author ricky
@@ -140,12 +139,12 @@ public class CouchbaseManager extends StandardManager {
     /**
      * The descriptive information about this implementation.
      */
-    private static final String info = "CouchbaseManager / 0.2";
+    private static final String info = "CouchbaseManager / 0.4.0";
     
     /**
      * spymemcached client to communicate with the memory repository
      */
-    protected Client<CouchbaseWrapperSession> client = null;
+    protected Client client = null;
     
     //
     // PROPERTIES TO BE SET
@@ -189,7 +188,7 @@ public class CouchbaseManager extends StandardManager {
     /**
      * The serializing transcoder used to save/get objects in couchbase
      */
-    protected AppSerializingTranscoder transcoder = null;
+    protected TranscoderUtil transcoder = null;
     
     /**
      * Number of nodes to persist an operation
@@ -200,6 +199,24 @@ public class CouchbaseManager extends StandardManager {
      * Number of nodes to replicate an operation
      */
     protected ReplicateTo replicateTo = ReplicateTo.ZERO;
+    
+    /**
+     * Size of the attribute that makes it be saved as external (another
+     * couchbase object).
+     */
+    protected int attrMaxSize = 10*1024;
+    
+    /**
+     * Minutes extra to avoid touch operations against external attributes.
+     * The external objects are saved with this extra time to avoid operations.
+     */
+    protected int attrTouchExtraTime = 10*60;
+    
+    /**
+     * Usage condition.
+     */
+    protected UsageConfiguration attrUsageCondition =
+            new UsageConfiguration(100, 0, 0);
     
     //
     // CONSTRUCTOR
@@ -305,7 +322,7 @@ public class CouchbaseManager extends StandardManager {
      * Setter for the transcoder.
      * @param transcoder The new transcoder
      */
-    public void setTranscoder(AppSerializingTranscoder transcoder) {
+    public void setTranscoder(TranscoderUtil transcoder) {
         this.transcoder = transcoder;
     }
 
@@ -340,6 +357,55 @@ public class CouchbaseManager extends StandardManager {
     public void setReplicateTo(ReplicateTo replicateTo) {
         this.replicateTo = replicateTo;
     }
+
+    /**
+     * Getter for the attrMaxSize property.
+     * @return The maximum size for internal attributes
+     */
+    public int getAttrMaxSize() {
+        return attrMaxSize;
+    }
+
+    /**
+     * Setter for the attrMaxSize property.
+     * @param attrMaxSize The current max size for internal attributes
+     */
+    public void setAttrMaxSize(int attrMaxSize) {
+        this.attrMaxSize = attrMaxSize;
+    }
+
+    /**
+     * Getter for the attrTouchExtraTime property.
+     * @return The extra time minutes to external attributes
+     */
+    public int getAttrTouchExtraTime() {
+        return attrTouchExtraTime;
+    }
+
+    /**
+     * Setter for the attrTouchExtraTime property.
+     * @param attrTouchExtraTime The current extra time minutes for external 
+     * attributes
+     */
+    public void setAttrTouchExtraTime(int attrTouchExtraTime) {
+        this.attrTouchExtraTime = attrTouchExtraTime;
+    }
+
+    /**
+     * Getter for the attribute usage condition.
+     * @return The usage condition
+     */
+    public UsageConfiguration getAttrUsageCondition() {
+        return attrUsageCondition;
+    }
+
+    /**
+     * Setter for the usage condition.
+     * @param attrUsageCondition The new usage condition
+     */
+    public void setAttrUsageCondition(UsageConfiguration attrUsageCondition) {
+        this.attrUsageCondition = attrUsageCondition;
+    }
     
     //
     // MANAGER METHODS (overriden StandardManager)
@@ -365,9 +431,7 @@ public class CouchbaseManager extends StandardManager {
 
     /**
      * Called from the StandardSession code.
-     * The session is added to the internal map. The session is transformed
-     * into MemWrapperSession if it is called from StandardSession. Method
-     * called after create a new session to add it to the Map.
+     * Currently it just calls the super add method.
      * @param session The session to add
      */
     @Override
@@ -381,7 +445,9 @@ public class CouchbaseManager extends StandardManager {
      * Method that change the sessionId. It seems that it is used when a
      * session is authenticated (the principal is set). The session is deleted
      * in couchbase, then the id is changed normally and the session is added
-     * to couchbase with the new id. The session is marked not loaded.
+     * to couchbase with the new id. The session is marked not loaded. If
+     * there are external attributes in the session they are just reused
+     * (references are copied).
      * @param session The session to change id
      */
     @Override
@@ -392,7 +458,7 @@ public class CouchbaseManager extends StandardManager {
             CouchbaseWrapperSession couchSes = (CouchbaseWrapperSession) session;
             boolean locked = couchSes.isForegroundLocked();
             // delete current session from couchbase
-            doSessionDelete(couchSes, null);
+            doSessionDeleteInternal(couchSes);
             // if it is locked => do the unlock to decrease the count
             if (locked) {
                 couchSes.unlockForegroundCompletely();
@@ -561,6 +627,12 @@ public class CouchbaseManager extends StandardManager {
         return findSession(id);
     }
         
+    /**
+     * Real remove method that calls super method to delete the session 
+     * from the internal map. It is called from the operation thread when the
+     * delete in couchbase is finished.
+     * @param session The session to delete.
+     */
     public void realRemove(Session session) {
         log.log(Level.FINE, "CouchbaseManager.realRemove(Session): init {0}", session.toString());
         super.remove(session);
@@ -569,8 +641,9 @@ public class CouchbaseManager extends StandardManager {
     
     /**
      * Method that is called from StandardSession inside expire method.
-     * The session is removed from the internal map and from the external 
-     * repository (if not already in NOT_EXISTS state).
+     * If the session is not in couchbase (NOT_EXISTS) it is deleted (realRemove)
+     * from internal map but if first called the delete operation is launched
+     * asynchronously.
      * @param session The session to remove
      */
     @Override
@@ -675,9 +748,9 @@ public class CouchbaseManager extends StandardManager {
                 baseURIs.add(new URI(uri));
             }
             //client = new CouchbaseClient(baseURIs, "default", null, "");
-            transcoder.setAppLoader(this.getContainer().getLoader().getClassLoader());
-            client = new Client<CouchbaseWrapperSession>(baseURIs, this.bucket, 
-                    this.username, this.password, transcoder, persistTo, replicateTo);
+            ((GlassfishTranscoderUtil)transcoder).setAppLoader(this.getContainer().getLoader().getClassLoader());
+            client = new Client(baseURIs, bucket, username, password, 
+                    persistTo, replicateTo, operationTimeout);
         } catch (Exception e) {
             log.log(Level.SEVERE, "Error initiliazing spymemcached client...", e);
             initialized = false;
@@ -719,6 +792,47 @@ public class CouchbaseManager extends StandardManager {
     //
     
     /**
+     * Extra method to read and external attribute synchronously. If error
+     * the session is marked and IllegalState is thrown.
+     * @param session The session 
+     * @param reference The reference of the external attribute
+     * @return The object read from couchbase
+     */
+    public Object getAttributeValue(CouchbaseWrapperSession session, String reference) {
+        ClientResult res = client.getsSync(reference);
+        if (res.isSuccess()) {
+            Object result = this.transcoder.deserialize(res.getValue());
+            return result;
+        } else if (res.isNotFound()) {
+            log.log(Level.FINE, "The reference {0} is not found", reference);
+            return null;
+        } else {
+            session.setMemStatus(SessionMemStatus.ERROR);
+            IllegalStateException e = new IllegalStateException(res.getStatus().getMessage(), res.getException());
+            log.log(Level.SEVERE, "Error reading the reference", e);
+            throw e;
+        }
+    }
+    
+    /**
+     * Extra method to delete an external attribute syncronously. If error
+     * the session is marked as ERROR and IllegalState is returned.
+     * @param session The session to delete the attr
+     * @param reference The reference of the external attribute
+     */
+    public void removeAttributeValue(CouchbaseWrapperSession session, String reference) {
+        ClientResult res = client.deleteSync(reference);
+        if (res.isNotFound()) {
+            log.log(Level.FINE, "The reference {0} is not found", reference);
+        } else if (!res.isSuccess()) {
+            session.setMemStatus(SessionMemStatus.ERROR);
+            IllegalStateException e = new IllegalStateException(res.getStatus().getMessage(), res.getException());
+            log.log(Level.SEVERE, "Error deleting the reference", e);
+            throw e;
+        }
+    }
+    
+    /**
      * Loads a new session from the couchbase repository. The session is 
      * read using gets or getAndLock (sticky or non-sticky configuration). 
      * The session is filled with the read data using fill method.
@@ -743,17 +857,16 @@ public class CouchbaseManager extends StandardManager {
             session.setMemStatus(expected);
         } else {
             // if non-sticky or there's an error in background operation => force a read from couchbase
-            ClientRequest req;
+            ClientResult res;
             if (expected.isLocked() && !this.isSticky()) {
-                req = client.getAndLock(session, this.lockTime);
+                res = client.getAndLockSync(session.getId(), this.lockTime);
             } else {
-                req = client.gets(session);
+                res = client.getsSync(session.getId());
             }
-            ClientResult res = client.waitForCompletion(req, this.operationTimeout);
             if (res.isSuccess()) {
                 log.fine("The session was in the repository, returning it");
-                CouchbaseWrapperSession loaded = (CouchbaseWrapperSession) res.getValue();
-                session.fill(loaded, expected, res.getCas());
+                byte[] loaded = res.getValue();
+                session.processFill(loaded, this.transcoder, expected, res.getCas());
             } else if (res.isNotFound()) {
                 // TODO: I don't know why sometimes "NOT_FOUND" and "Not Found"
                 //       is returned. Maybe I should try to check the result 
@@ -779,58 +892,103 @@ public class CouchbaseManager extends StandardManager {
     
     /**
      * Performs a session save using the CAS. The session is saved and touched
-     * (expiration is refreshed), the method uses secure CAS method to prevent
-     * multi-access errors.
-     * TODO: cas has no exp method without transcoder.
+     * (expiration is refreshed), the method uses a bulk operation that is
+     * filled in the processSave and then the final CAS (non-sticky) or SET
+     * (sticky).
      * @param session The session to save.
      * @param exec If not null the method is executed asynchronously
-     * @return the request executing if exec is not null or null is not async
      */
-    public ClientRequest doSessionSave(CouchbaseWrapperSession session, ExecOnCompletion exec) {
+    public void doSessionSave(CouchbaseWrapperSession session, ExecOnCompletion exec) {
         log.log(Level.FINE, "CouchbaseManager.doSessionSave(Session,ExecOnCompletion): init {0} {1}", 
                 new Object[]{session.toString(), exec});
         session.waitOnExecution();
         // save the session inside reposiroty
-        ClientRequest req;
+        ClientResult res = null;
+        BulkClientRequest bulk = client.createBulk();
+        byte[] sesSerialized = session.processSave(client, bulk, transcoder);
         if (isSticky()) {
-            req = client.set(session, this.getMaxInactiveInterval());
+            if (exec == null) {
+                res = client.finishSetSync(bulk, session.getId(), 
+                        sesSerialized, this.getMaxInactiveInterval());
+            } else {
+                client.finishSetAsync(bulk, session.getId(), 
+                        sesSerialized, this.getMaxInactiveInterval(), exec);
+            }
         } else {
-            req = client.cas(session, session.getCas(), this.getMaxInactiveInterval());
+            if (exec == null) {
+                res = client.waitAndFinishCasSync(bulk, session.getId(), 
+                        sesSerialized, session.getCas(), this.getMaxInactiveInterval());
+            } else {
+                client.waitAndFinishCasAsync(bulk, session.getId(), 
+                        sesSerialized, session.getCas(), this.getMaxInactiveInterval(), exec);
+            }
         }
-        if (exec == null) {
-            ClientResult res = client.waitForCompletion(req, this.operationTimeout);
+        if (res != null) {
             if (!res.isSuccess()) {
                 session.setMemStatus(SessionMemStatus.ERROR);
                 IllegalStateException e = new IllegalStateException(res.getStatus().getMessage(), res.getException());
                 log.log(Level.SEVERE, "Error saving in the repo.", e);
                 throw e;
             }
-            req = null;
-        } else {
-            client.execOnCompletion(req, this.operationTimeout, exec);
         }
-        log.log(Level.FINE, "CouchbaseManager.doSessionSave(Session,ExecOnCompletion): exit {0}", req);
-        return req;
+        log.log(Level.FINE, "CouchbaseManager.doSessionSave(Session,ExecOnCompletion): exit");
     }
     
     /**
-     * Deletes a session from the couchbase server.
+     * Internal method that just delete the session object in couchbase (sync)
+     * and not the external attributes. It is used only in changeSessionId.
+     * @param session The session to delete
+     */
+    protected void doSessionDeleteInternal(CouchbaseWrapperSession session) {
+        log.log(Level.FINE, "CouchbaseManager.doSessionDeleteInternal(Session): init {0}",
+                session.toString());
+        session.waitOnExecution();
+        ClientResult res;
+        if (this.isSticky()) {
+            res = client.deleteSync(session.getId());
+        } else {
+            res = client.deleteSync(session.getId(), session.getCas());
+        }
+        if (!res.isSuccess()) {
+            session.setMemStatus(SessionMemStatus.ERROR);
+            IllegalStateException e = new IllegalStateException(res.getStatus().getMessage(), res.getException());
+            log.log(Level.SEVERE, "Error deleting in the repo. ", e);
+            throw e;
+        } else {
+            session.setCas(-1);
+            session.setMemStatus(SessionMemStatus.NOT_EXISTS);
+        }
+        log.log(Level.FINE, "CouchbaseManager.doSessionDeleteInternal(Session,ExecOnCompletion): exit");
+    }
+    
+    /**
+     * Deletes a session from the couchbase server. The deletion is done with
+     * a bulk operation that deletes all the external attributes and then the
+     * session itself.
      * @param session The session to delete.
      * @param exec If not null the method is executed asynchronously
-     * @return the request executing if exec is not null or null is not async
      */
-    public ClientRequest doSessionDelete(CouchbaseWrapperSession session, ExecOnCompletion exec) {
+    public void doSessionDelete(CouchbaseWrapperSession session, ExecOnCompletion exec) {
         log.log(Level.FINE, "CouchbaseManager.doSessionDelete(Session,ExecOnCompletion): init {0} {1}", 
                 new Object[]{session.toString(), exec});
         session.waitOnExecution();
-        ClientRequest req;
+        ClientResult res = null;
+        BulkClientRequest bulk = client.createBulk();
+        session.processDelete(client, bulk);
         if (this.isSticky()) {
-            req = client.delete(session);
+            if (exec == null) {
+                res = client.finishDeleteSync(bulk, session.getId());
+            } else {
+                client.finishDeleteAsync(bulk, session.getId(), exec);
+            }
         } else {
-            req = client.delete(session, session.getCas());
+            if (exec == null) {
+                res = client.finishDeleteSync(bulk, session.getId(), session.getCas());
+            } else {
+                client.finishDeleteAsync(bulk, session.getId(), session.getCas(), exec);
+            }
         }
-        if (exec == null) {
-            ClientResult res = client.waitForCompletion(req, this.operationTimeout);
+        if (res != null) {
             if (!res.isSuccess()) {
                 session.setMemStatus(SessionMemStatus.ERROR);
                 IllegalStateException e = new IllegalStateException(res.getStatus().getMessage(), res.getException());
@@ -840,12 +998,8 @@ public class CouchbaseManager extends StandardManager {
                 session.setCas(-1);
                 session.setMemStatus(SessionMemStatus.NOT_EXISTS);
             }
-            req = null;
-        } else {
-            client.execOnCompletion(req, this.operationTimeout, exec);
         }
-        log.log(Level.FINE, "CouchbaseManager.doSessionDelete(Session,ExecOnCompletion): exit {0}", req);
-        return req;
+        log.log(Level.FINE, "CouchbaseManager.doSessionDelete(Session,ExecOnCompletion): exit");
     }
     
     /**
@@ -853,76 +1007,45 @@ public class CouchbaseManager extends StandardManager {
      * not modified and it just needs to be released.
      * @param session The session to unlock
      * @param exec If not null the method is executed asynchronously
-     * @return the request executing if exec is not null or null is not async
      */
-    public ClientRequest doSessionUnlock(CouchbaseWrapperSession session, ExecOnCompletion exec) {
+    public void doSessionUnlock(CouchbaseWrapperSession session, ExecOnCompletion exec) {
         log.log(Level.FINE, "CouchbaseManager.doSessionUnlock(Session,ExecOnCompletion): init {0} {1}", 
                 new Object[]{session.toString(), exec});
         session.waitOnExecution();
-        ClientRequest req = client.unlock(session, session.getCas());
+        ClientResult res = null;
         if (exec == null) {
-            ClientResult res = client.waitForCompletion(req, this.operationTimeout);
+            res = client.unlockSync(session.getId(), session.getCas());
+        } else {
+            client.unlockAsync(session.getId(), session.getCas(), exec);
+        }
+        if (res != null) {
             if (!res.isSuccess()) {
                 session.setMemStatus(SessionMemStatus.ERROR);
                 IllegalStateException e = new IllegalStateException(res.getStatus().getMessage(), res.getException());
                 log.log(Level.SEVERE, "Error unlocking in the repo.", e);
                 throw e;
             }
-            req = null;
-        } else {
-            client.execOnCompletion(req, this.operationTimeout, exec);
         }
-        log.log(Level.FINE, "CouchbaseManager.doSessionUnlock(Session,ExecOnCompletion): exit {0}", req);
-        return req;
+        log.log(Level.FINE, "CouchbaseManager.doSessionUnlock(Session,ExecOnCompletion): exit");
     }
     
     /**
-     * Performs a touch (expiration is refreshed) over a session. This method is
-     * used when session was accessed but not modified (there is not a 
-     * touchAndUnlock or unlockAndTouch method).
-     * @param session The session to touch
-     * @param exec If not null the method is executed asynchronously
-     * @return the request executing if exec is not null or null is not async
-     */
-    /*public ClientRequest doSessionTouch(CouchbaseWrapperSession session, ExecOnCompletion exec) {
-        log.log(Level.FINE, "CouchbaseManager.doSessionTouch(Session,ExecOnCompletion): init {0} {1}", 
-                new Object[]{session.toString(), exec});
-        session.waitOnExecution();
-        ClientRequest req = client.touch(session, this.getMaxInactiveInterval());
-        if (exec == null) {
-            ClientResult res = client.waitForCompletion(req, this.operationTimeout);
-            if (!res.isSuccess()) {
-                session.setMemStatus(SessionMemStatus.ERROR);
-                IllegalStateException e = new IllegalStateException(res.getStatus().getMessage(), res.getException());
-                log.log(Level.SEVERE, "Error touching in the repo.", e);
-                throw e;
-            }
-            req = null;
-        } else {
-            client.execOnCompletion(req, this.operationTimeout, exec);
-        }
-        log.log(Level.FINE, "CouchbaseManager.doSessionTouch(Session,ExecOnCompletion): exit {0}", req);
-        return req;
-    }*/
-    
-    /**
      * Adds a new session to the couchbase server when a new session is created.
+     * Bulk is used to create external attributes if needed.
      * @param session The new session to be added.
      */
     public void doSessionAdd(CouchbaseWrapperSession session) {
         log.log(Level.FINE, "CouchbaseManager.doSessionAdd(Session): init {0}", session.toString());
         session.waitOnExecution();
-        try {
-            ClientRequest req = client.add(session, this.getMaxInactiveInterval());
-            ClientResult res = client.waitForCompletion(req, this.operationTimeout);
-            if (!res.isSuccess()) {
-                session.setMemStatus(SessionMemStatus.ERROR);
-                IllegalStateException e = new IllegalStateException(res.getStatus().getMessage(), res.getException());
-                log.log(Level.SEVERE, "Error adding in the repo.", e);
-                throw e;
-            }
-        } catch (Exception e) {
-            log.log(Level.SEVERE, "Error adding the session in the repo", e);
+        BulkClientRequest bulk = client.createBulk();
+        byte[] sesSerialized = session.processSave(client, bulk, transcoder);
+        ClientResult res = client.finishAddSync(bulk, session.getId(), 
+                sesSerialized, this.getMaxInactiveInterval());
+        if (!res.isSuccess()) {
+            session.setMemStatus(SessionMemStatus.ERROR);
+            IllegalStateException e = new IllegalStateException(res.getStatus().getMessage(), res.getException());
+            log.log(Level.SEVERE, "Error adding in the repo.", e);
+            throw e;
         }
         log.fine("CouchbaseManager.doSessionAdd(Session): exit");
     }
@@ -947,6 +1070,15 @@ public class CouchbaseManager extends StandardManager {
                     if (sess.lockBackground()) {
                         try {
                             sess.isValid();
+                            // remove any possible external attribute deleted
+                            for (String reference: sess.getDeledAttributes()) {
+                                try {
+                                    this.removeAttributeValue(sess, reference);
+                                } catch (Exception e) {
+                                    // it does not matter, it could have been
+                                    // deleted by another server in the cluster
+                                }
+                            }
                         } finally {
                             sess.unlockBackground();
                         }

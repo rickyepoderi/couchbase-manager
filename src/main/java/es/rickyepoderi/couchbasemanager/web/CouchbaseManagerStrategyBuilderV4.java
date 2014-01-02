@@ -40,8 +40,10 @@ import org.glassfish.web.deployment.runtime.ManagerProperties;
 import org.glassfish.web.deployment.runtime.SessionManager;
 import org.glassfish.web.deployment.runtime.WebProperty;
 import com.sun.enterprise.web.ServerConfigLookup;
-import es.rickyepoderi.couchbasemanager.couchbase.transcoders.AppSerializingTranscoder;
+import es.rickyepoderi.couchbasemanager.couchbase.transcoders.GlassfishTranscoderUtil;
 import es.rickyepoderi.couchbasemanager.session.CouchbaseManager;
+import es.rickyepoderi.couchbasemanager.session.UsageConfiguration;
+import static es.rickyepoderi.couchbasemanager.web.CouchbaseManagerStrategyBuilder.PROP_ATTR_USAGE_CONDITION;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import net.spy.memcached.PersistTo;
@@ -114,11 +116,13 @@ public class CouchbaseManagerStrategyBuilderV4 extends CouchbaseManagerStrategyB
         manager.setOperationTimeout(operationTimeout);
         manager.setPersistTo(persistTo);
         manager.setReplicateTo(replicateTo);
+        manager.setAttrMaxSize(attrMaxSize);
+        manager.setAttrTouchExtraTime(attrTouchExtraTime);
+        manager.setAttrUsageCondition(attrUsageCondition);
         log.log(Level.FINE, "MemManagerStrategyBuilder.initializePersistenceStrategy: ioUtils={0}", ioUtils);
-        AppSerializingTranscoder transcoder = new AppSerializingTranscoder();
+        GlassfishTranscoderUtil transcoder = new GlassfishTranscoderUtil();
         transcoder.setIoUtils(ioUtils);
         manager.setTranscoder(transcoder);
-        // TODO: set more values
         StandardContext sctx = (StandardContext) ctx;
         if (!sctx.isSessionTimeoutOveridden()) {
             log.log(Level.FINE,
@@ -147,8 +151,6 @@ public class CouchbaseManagerStrategyBuilderV4 extends CouchbaseManagerStrategyB
         log.fine("MemManagerStrategyBuilder.readWebAppParams: init");
         // read normal properties
         super.readWebAppParams(ctx, smBean);
-        // TODO: add more parameters to read from the config
-        //       This method is in BasePersistenceStrategyBuilder
         if (smBean != null) {
             // read extra parameters
             ManagerProperties mgrBean = smBean.getManagerProperties();
@@ -207,7 +209,43 @@ public class CouchbaseManagerStrategyBuilderV4 extends CouchbaseManagerStrategyB
                         } catch (Exception e) {
                             log.log(Level.WARNING, "Invalid ReplicateTo enum {0}", value);
                         }
+                    } else if (name.equalsIgnoreCase(PROP_ATTR_MAX_SIZE)) {
+                        log.log(Level.FINE, "attrMaxSize: {0}", value);
+                        try {
+                            attrMaxSize = Integer.parseInt(value);
+                            if (attrMaxSize < 0) {
+                                log.log(Level.WARNING, "Invalid int format for attrMaxSize {0}", value);
+                                attrMaxSize = DEFAULT_ATTR_MAX_SIZE;
+                            }
+                        } catch (NumberFormatException e) {
+                            log.log(Level.WARNING, "Invalid int format for attrMaxSize {0}", value);
+                        }
+                    } else if (name.equalsIgnoreCase(PROP_ATTR_TOUCH_EXTRA_TIME)) {
+                        log.log(Level.FINE, "attrTouchExtraTime: {0}", value);
+                        try {
+                            attrTouchExtraTime = Integer.parseInt(value);
+                            if (attrTouchExtraTime < 0) {
+                                log.log(Level.WARNING, "Invalid int format for attrTouchExtraTime {0}", value);
+                                attrTouchExtraTime = DEFAULT_ATTR_TOUCH_EXTRA_TIME;
+                            }
+                        } catch (NumberFormatException e) {
+                            log.log(Level.WARNING, "Invalid int format for attrTouchExtraTime {0}", value);
+                        }
+                    } else if (name.equalsIgnoreCase(PROP_ATTR_USAGE_CONDITION)) {
+                        log.log(Level.FINE, "attrUsageCondition: {0}", value);
+                        try {
+                            attrUsageCondition = new UsageConfiguration(value);
+                        } catch (NumberFormatException e) {
+                            log.log(Level.WARNING, "Invalid int format for attrUsageCondition {0}", value);
+                            attrUsageCondition = null;
+                        }
                     }
+                }
+                // assign attr usage if not defined
+                if (attrUsageCondition == null && this.sticky) {
+                    attrUsageCondition = DEFAULT_USAGE_CONFIGURATION_STICKY;
+                } else if (attrUsageCondition == null) {
+                    attrUsageCondition = DEFAULT_USAGE_CONFIGURATION_NON_STICKY;
                 }
             }
         }

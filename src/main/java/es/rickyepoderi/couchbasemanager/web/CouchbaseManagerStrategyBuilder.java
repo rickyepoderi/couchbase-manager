@@ -36,6 +36,7 @@
 package es.rickyepoderi.couchbasemanager.web;
 
 import com.sun.enterprise.web.BasePersistenceStrategyBuilder;
+import es.rickyepoderi.couchbasemanager.session.UsageConfiguration;
 import net.spy.memcached.PersistTo;
 import net.spy.memcached.ReplicateTo;
 
@@ -82,6 +83,19 @@ import net.spy.memcached.ReplicateTo;
  *       before returning. This is a couchbase parameter to all write/modification
  *       operation, the value should be the String representation of the
  *       net.spy.memcached.ReplicatedTo enum. Default ZERO.</li>
+ *   <li>attrMaxSize: the maximum length of an internal attribute, if the
+ *       attribute is longer than this size it is tracked to check if it should
+ *       be externalized (written into another couchbase object). Specified in 
+ *       bytes. Default: 10240 (10K).</li>
+ *   <li>attrUsageCondition: This attribute contains three numbers: the minimum 
+ *       data to start taking into account the usage information of the attribute;
+ *       the lower percentage limit (a integrated value is externalized when the
+ *       usage is below the lower limit); and the upper percentage limit (an 
+ *       external attribute is reintegrated as internal if the usage goes above 
+ *       this limit). Default: in sticky 10-10-25, in non-sticky 10-30-45.
+ *   <li>attrTouchExtraTime: The external attributes are saved with an extra
+ *       time (expiration), this way the external attributes are not always 
+ *       touched when not used. Specified in seconds. Default: 600 (10 min).</li>
  * </ul>
  * 
  * <p>Example of configuration:</p>
@@ -150,6 +164,26 @@ public abstract class CouchbaseManagerStrategyBuilder extends BasePersistenceStr
      */
     public static final String PROP_REPLICATE_TO = "replicateTo";
     
+    /**
+     * Property that specify the maximum length to start tracking of the attribute.
+     */
+    public static final String PROP_ATTR_MAX_SIZE = "attrMaxSize";
+    
+    /**
+     * Property to specify the extra time for external attributes (expiration).
+     */
+    public static final String PROP_ATTR_TOUCH_EXTRA_TIME = "attrTouchExtraTime";
+    
+    /**
+     * Property that defined the usage condition to externalized attributes:
+     * [c=0..N]-[l=0-100]-[h=0-100]. The "c" is the minimum count of accesses
+     * used to calculate the usage percentage, "l" is the low limit when an
+     * internal attribute is externalized for a low usage, "h" is the high limit
+     * when an external attribute is re-integrated as internal. For example:
+     * "20-20-30". All values should be integers.
+     */
+    public static final String PROP_ATTR_USAGE_CONDITION = "attrUsageCondition";
+    
     //
     // DEFAULT VALUES FOR PROPERTIES
     //
@@ -198,6 +232,28 @@ public abstract class CouchbaseManagerStrategyBuilder extends BasePersistenceStr
      * Default value for replicateTo (ZERO)
      */
     protected static final ReplicateTo DEFAULT_REPLICATE_TO = ReplicateTo.ZERO;
+    
+    /**
+     * Default maximum length (10K)
+     */
+    protected static final int DEFAULT_ATTR_MAX_SIZE = 10*1024;
+    
+    /**
+     * Default extra time for external attributes (10 min)
+     */
+    protected static final int DEFAULT_ATTR_TOUCH_EXTRA_TIME = 10*60;
+    
+    /**
+     * Default usage configuration for sticky: 10-10-25.
+     */
+    protected static final UsageConfiguration DEFAULT_USAGE_CONFIGURATION_STICKY = 
+            new UsageConfiguration(10, 10, 25);
+    
+    /**
+     * Default usage configuration for non-sticky: 10-30-45.
+     */
+    protected static final UsageConfiguration DEFAULT_USAGE_CONFIGURATION_NON_STICKY = 
+            new UsageConfiguration(10, 30, 45);
     
     //
     // REAL PROPERTIES
@@ -248,4 +304,18 @@ public abstract class CouchbaseManagerStrategyBuilder extends BasePersistenceStr
      */
     protected ReplicateTo replicateTo = DEFAULT_REPLICATE_TO;
     
+    /**
+     * property to specify the maximum length for internal attributes.
+     */
+    protected int attrMaxSize = DEFAULT_ATTR_MAX_SIZE;
+    
+    /**
+     * property that manages the extra time for external attributes.
+     */
+    protected int attrTouchExtraTime = DEFAULT_ATTR_TOUCH_EXTRA_TIME;
+    
+    /**
+     * The property for usage management for external attributes.
+     */
+    protected UsageConfiguration attrUsageCondition = null;
 }
