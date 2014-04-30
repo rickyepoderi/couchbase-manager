@@ -30,11 +30,11 @@ public class SessionOuputStreamTest {
             sos.writeLong(1L);
             sos.writeBoolean(true);
             sos.writeString("test01");
-            sos.writeObject(new TranscoderUtil(), "sample1");
-            sos.writeObject(new TranscoderUtil(), "sample2");
-            sos.undo();
-            sos.writeObject(new TranscoderUtil(), "sample3");
-            sos.writeObject(new TranscoderUtil(), null);
+            sos.writeObjectAsObject(new TranscoderUtil(), "sample1");
+            sos.writeObjectAsObject(new TranscoderUtil(), "sample2");
+            sos.undo(4);
+            sos.writeObjectAsObject(new TranscoderUtil(), "sample3");
+            sos.writeObjectAsObject(new TranscoderUtil(), null);
             sos.flush();
             byte[] ouput = sos.toByteArray();
             sis = new SessionInputStream(ouput);
@@ -42,10 +42,10 @@ public class SessionOuputStreamTest {
             Assert.assertEquals(sis.readLong(), 1L);
             Assert.assertEquals(sis.readBoolean(), true);
             Assert.assertEquals(sis.readString(), "test01");
-            Assert.assertEquals(sis.readObject(new TranscoderUtil()), "sample1");
-            //Assert.assertEquals(sis.readObject(new TranscoderUtil()), "sample2");
-            Assert.assertEquals(sis.readObject(new TranscoderUtil()), "sample3");
-            Assert.assertNull(sis.readObject(new TranscoderUtil()));
+            Assert.assertEquals(sis.readObjectAsObject(new TranscoderUtil()), "sample1");
+            //Assert.assertEquals(sis.readObjectAsObject(new TranscoderUtil()), "sample2");
+            Assert.assertEquals(sis.readObjectAsObject(new TranscoderUtil()), "sample3");
+            Assert.assertNull(sis.readObjectAsObject(new TranscoderUtil()));
         } finally {
             if (sos != null) {
                 try {sos.close();} catch(IOException e) {}

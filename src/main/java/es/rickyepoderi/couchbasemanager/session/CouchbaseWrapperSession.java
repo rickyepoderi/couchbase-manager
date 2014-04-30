@@ -45,10 +45,12 @@ import es.rickyepoderi.couchbasemanager.io.SessionInputStream;
 import es.rickyepoderi.couchbasemanager.io.SessionOutputStream;
 import java.io.IOException;
 import java.security.Principal;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Set;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import org.apache.catalina.Manager;
@@ -186,8 +188,9 @@ public class CouchbaseWrapperSession extends StandardSession {
     protected transient Set<String> deletedAttributes = null;
     
     /**
-     * When an attribute is big enough the attribute is tracked for
-     * a possible externalization.
+     * All the attributes have some information used mainly to know if it
+     * should be externalized and to store the serialized object
+     * until accessed.
      */
     protected transient Map<String,AttributeInfo> attrInfos = null;
     
@@ -212,7 +215,7 @@ public class CouchbaseWrapperSession extends StandardSession {
         this.mstatus = SessionMemStatus.NOT_LOADED;
         this.numForegroundLocks = 0;
         this.deletedAttributes = new HashSet<String>();
-        this.attrInfos = new HashMap<String, AttributeInfo>();
+        this.attrInfos = new ConcurrentHashMap<String, AttributeInfo>();
         this.usageTimes = 0;
         log.log(Level.FINE, "CouchbaseWrapperSession.constructor(Manager): init {0}", manager);
     }
@@ -281,7 +284,7 @@ public class CouchbaseWrapperSession extends StandardSession {
      * Getter for the deleted attributes marked in this processing.
      * @return The list of attributes to delete
      */
-    synchronized public String[] getDeledAttributes() {
+    synchronized public String[] getDeletedAttributes() {
         return this.deletedAttributes.toArray(new String[0]);
     }
     
@@ -296,22 +299,27 @@ public class CouchbaseWrapperSession extends StandardSession {
      */
     synchronized public void clearRequestAndNotify(ClientResult res) {
         log.log(Level.FINE, "CouchbaseWrapperSession.clearRequest(): init/exit {0}", res);
-        // clear attributes if non-sticky
-        // now the references remain just for lastTouch (avoid touch)
-        for (Map.Entry<String, Object> entry : this.attributes.entrySet()) {
-            Object value = entry.getValue();
-            if (value instanceof ReferenceObject) {
-                // delete value but keep reference for touch time
-                // now it is deleted in both sticky or non-sticky
-                ((ReferenceObject) value).setValue(null);
-            } else if (!((CouchbaseManager)manager).isSticky()){
-                // normall attr => just delete it if non sticky
-                this.attributes.remove(entry.getKey());
+        // clear attribute info values if non-sticky
+        for (Map.Entry<String, AttributeInfo> entry : this.attrInfos.entrySet()) {
+            AttributeInfo ai = entry.getValue();
+            // non-sticky clear the values for all the attributes
+            // sticky only for ReferenceObjects
+            // references are maintained for expiration
+            if (!((CouchbaseManager) manager).isSticky()) {
+                // non-sticky clear all values maintaining references
+                ai.setValue(null);
+            } else if (ai.isReference()) {
+                // sticky only delete externalized attributes but maintain serialized
+                // the value in real attributes is just the serialized to mark it
+                byte[] serialized = ai.getSerialized();
+                ai.setValue(null);
+                ai.setSerialized(serialized, true);
+                this.attributes.put(entry.getKey(), serialized);
             }
         }
-        // clean all attrInfos
-        for (AttributeInfo ai: this.attrInfos.values()) {
-            ai.setModified(false);
+        // if non-sticky clear all the values too
+        if (!((CouchbaseManager) manager).isSticky()) {
+            this.attributes.clear();
         }
         // set to error if some error has ocurred
         if (!res.isSuccess()) {
@@ -331,7 +339,7 @@ public class CouchbaseWrapperSession extends StandardSession {
     
     /**
      * Clear the session. That means the transient vars are cleared to the
-     * next request-
+     * next request.
      */
     synchronized protected void clear() {
         this.cas = -1;
@@ -641,17 +649,17 @@ public class CouchbaseWrapperSession extends StandardSession {
      */
     @Override
     public void setAttribute(String name, Object value) {
-        Object val = super.getAttribute(name);
-        if (val instanceof ReferenceObject) {
-            // the valuye is a reference => get the proper value
-            markInfoAsModifiedCreating(name);
-            ReferenceObject ro = (ReferenceObject) val;
-            ro.setValue(value);
-        } else {
-            // normal value => just return the value normally
-            markInfoAsModifiedIfExists(name);
-            super.setAttribute(name, value);
+        // set the attribute in the infos, create one if needed
+        AttributeInfo ai = this.getAttributeInfo(name);
+        if (ai == null) {
+            // create an empty AttributeInfo and add to the session list
+            ai = new AttributeInfo();
+            this.attrInfos.put(name, ai);
         }
+        // assign new value to the attr
+        ai.setValue(value);
+        // always set the attribute in normal map
+        super.setAttribute(name, value);
     }
     
     /**
@@ -666,13 +674,17 @@ public class CouchbaseWrapperSession extends StandardSession {
      */
     @Override
     public void removeAttribute(String name, boolean notify, boolean checkValid) {
-        Object value = super.getAttributeInternal(name);
-        if (value instanceof ReferenceObject) {
-            // the value is a reference => mark to delete it
-            ReferenceObject ro = (ReferenceObject) value;
-            addDeletedAttribute(ro.getReference());
+        // remove from infos
+        AttributeInfo ai = this.getAttributeInfo(name);
+        log.log(Level.FINER, "removing name={0} attrInfo={1}", new Object[]{name, ai});
+        if (ai != null) {
+            if (ai.isReference()) {
+                addDeletedAttribute(ai.getReference());
+            }
+            // remove in attrInfo
+            this.attrInfos.remove(name);
         }
-        deleteInfoAsModifiedIfExists(name);
+        // remove in the normal map
         super.removeAttribute(name, notify, checkValid);
     }
 
@@ -684,23 +696,8 @@ public class CouchbaseWrapperSession extends StandardSession {
      */
     @Override
     public Object getAttribute(String name) {
-        Object value = super.getAttribute(name);
-        if (value instanceof ReferenceObject) {
-            // return the real value, reading it if necessary
-            markInfoAsModifiedCreating(name);
-            ReferenceObject ro = (ReferenceObject) value;
-            value = ro.getValue();
-            if (value == null) {
-                // do a get from couchbase
-                log.log(Level.FINE, "Reading attribute {0} with reference {1}", 
-                        new Object[]{name, ro.getReference()});
-                value = ((CouchbaseManager)this.manager).getAttributeValue(this, ro.getReference());
-                ro.setValue(value);
-            }
-        } else {
-            markInfoAsModifiedIfExists(name);
-        }
-        return value;
+        this.getAttributeInfo(name);
+        return super.getAttribute(name);
     }
     
     /**
@@ -742,49 +739,71 @@ public class CouchbaseWrapperSession extends StandardSession {
         }
     }
     
-    //
-    // Infos
-    //
-    
-    /**
-     * Method to set the info as modified if it exists.
-     * @param name The name of the attribute.
-     */
-    synchronized private void markInfoAsModifiedIfExists(String name) {
-        AttributeInfo ai = this.attrInfos.get(name);
-        if (ai != null) {
-            ai.setModified(true);
-        }
-    }
-    
-    /**
-     * Method to set the info as modified but it creates a new ai if it
-     * does not exists.
-     * @param name  The name of the attribute.
-     */
-    synchronized private void markInfoAsModifiedCreating(String name) {
-        AttributeInfo ai = this.attrInfos.get(name);
-        if (ai == null) {
-            ai = new AttributeInfo(usageTimes);
-            this.attrInfos.put(name, ai);
-        }
-        ai.setModified(true);
-    }
-    
-    /**
-     * Method to delete the info for an attribute.
-     * @param name The name of the attribute
-     */
-    synchronized private void deleteInfoAsModifiedIfExists(String name) {
-        this.attrInfos.remove(name);
-    }
-    
     /**
      * Method to add an external attribute as deleted.
      * @param reference The reference of the external attribute
      */
     synchronized private void addDeletedAttribute(String reference) {
         this.deletedAttributes.add(reference);
+    }
+    
+    /**
+     * Synchronized method to de-serialize an attribute.
+     * @param ai The attribute to deserialize
+     */
+    synchronized private void deserializeAttribute(AttributeInfo ai) {
+        if (!ai.isDeserialized()) {
+            ai.deserialize(((CouchbaseManager) manager).getTranscoder());
+        }
+    }
+    
+    /**
+     * Return the attribute info if the session is not deleted. The method
+     * performs de-serialization if needed and if the attribute is externalized
+     * it is read from couchbase synchronously. The attribute is also inserted
+     * in real attributes map if found.
+     * @param name The name of the attribute
+     * @return The attribute info or null
+     */
+    private AttributeInfo getAttributeInfo(String name) {
+        if (SessionMemStatus.NOT_EXISTS.equals(this.mstatus)) {
+            return null;
+        } else {
+            // TODO: Errors when the session is expired, attributes not loaded
+            AttributeInfo ai = this.attrInfos.get(name);
+            if (ai != null) {
+                // if the value is not de-serialized => do it now
+                if (!ai.isDeserialized()) {
+                    log.log(Level.FINER, "Deserializing attribute {0}", name);
+                    deserializeAttribute(ai);
+                }
+                // if it is a reference I need to read from couchbase
+                if (ai.isReference()) {
+                    Object realVal = ai.getReferenceValue();
+                    if (realVal == null) {
+                        // do a get from couchbase
+                        String ref = ai.getReference();
+                        log.log(Level.FINER, "Reading attribute {0} with reference {1}", new Object[]{name, ref});
+                        realVal = ((CouchbaseManager) this.manager).getAttributeValue(this, ref);
+                        ai.setReferenceValue(realVal);
+                        this.attributes.put(name, realVal);
+                    }
+                } else {
+                    this.attributes.put(name, ai.getValue());
+                }
+                // mark as modified
+                ai.setSerialized(null, ai.isReference());
+            }
+            return ai;
+        }
+    }
+    
+    /**
+     * Return all the attribute infos of the session.
+     * @return All the attribute infos
+     */
+    public Collection<AttributeInfo> getAttributeInfos() {
+        return this.attrInfos.values();
     }
     
     //
@@ -801,28 +820,25 @@ public class CouchbaseWrapperSession extends StandardSession {
      * be below the lower usage, and to be reintegrated in the session its usage
      * should be above the upper limit.
      * @param name The name of the attribute
-     * @param value The value of the attribute
      * @param length The size in bytes of the serialization
      * @param isExternalNow If the attribute is external right now
      * @return true if it should be externalized, false if not
      */
-    synchronized private boolean isExternal(String name, Object value, 
+    synchronized private boolean isExternal(String name, AttributeInfo ai,
             int length, boolean isExternalNow) {
         // the idea is combine size of the attribute and a usage ratio
         CouchbaseManager m = ((CouchbaseManager) manager);
         boolean isExternal;
-        AttributeInfo ai = this.attrInfos.get(name);
         if (length > m.getAttrMaxSize()) {
-            // the attribute is big => track it using infos
-            if (ai == null) {
-                ai = new AttributeInfo(this.usageTimes);
-                this.attrInfos.put(name, ai);
-            } else if (ai.isModified()) {
-                // increment usage
-                ai.incrementUsage();
+            // the attribute is big => tracked it incrementing the counter
+            if (ai.isModified()) {
+                ai.incrementUsage(this.usageTimes);
+            } else if (!ai.isStatsTracked()) {
+                ai.createEmptyStats(this.usageTimes);
             }
             // if the usage is reliable calculate if it should be externalized
             if (ai.getAttributeLiveTimes(this.usageTimes) > m.getAttrUsageCondition().getMinimum()) {
+                log.log(Level.FINER, "DELETE: name={0} usage={0}", ai.getUsage(usageTimes));
                 if (isExternalNow) {
                     // if it external now it remains external while the usage
                     // is below the upper limit
@@ -838,11 +854,11 @@ public class CouchbaseWrapperSession extends StandardSession {
             }
         } else {
             // little attributes are never externalized or tracked
-            if (ai != null) {
-                this.attrInfos.remove(name);
-            }
+            ai.cleanStats();
             isExternal = false;
         }
+        log.log(Level.INFO, "DELETE: isExternal: {0} - {1} -> {2}",  
+                new Object[]{name, length, isExternal});
         return isExternal;
     }
     
@@ -852,12 +868,12 @@ public class CouchbaseWrapperSession extends StandardSession {
      * filled with external attribute changes (if they are needed).
      * @param client The couchbase client to process bulk moperation
      * @param bulk The bulk operation
-     * @param trans The transcoder to serialize objects
      * @return The session serialized to perform the finish operation
      */
-    synchronized public byte[] processSave(Client client, BulkClientRequest bulk, TranscoderUtil trans) {
+    synchronized public byte[] processSave(Client client, BulkClientRequest bulk) {
         SessionOutputStream sos = null;
         try {
+            TranscoderUtil trans = ((CouchbaseManager)manager).getTranscoder();
             sos = new SessionOutputStream();
             // write the fixed parts (non-transient) of the session
             sos.writeString(this.id);
@@ -875,24 +891,30 @@ public class CouchbaseWrapperSession extends StandardSession {
             // the exp time for attr is session timeout + extra time
             int exp = manager.getMaxInactiveInterval() + ((CouchbaseManager)manager).getAttrTouchExtraTime();
             // write the attributes one by one
-            for (Map.Entry<String, Object> entry : attributes.entrySet()) {
+            for (Map.Entry<String, AttributeInfo> entry : this.attrInfos.entrySet()) {
                 // write the key and the object
                 sos.writeString(entry.getKey());
-                AttributeInfo ai = this.attrInfos.get(entry.getKey());
+                AttributeInfo ai = entry.getValue();
+                log.log(Level.FINER, "DELETE: Processing attribute: {0} - hasStats={1} - isModified={2} - isReference={3}", 
+                        new Object[]{entry.getKey(), ai.isStatsTracked(), ai.isModified(), ai.isReference()});
                 // check if the object is a reference
-                if (entry.getValue() instanceof ReferenceObject) {
-                    ReferenceObject ro = (ReferenceObject) entry.getValue();
-                    if (ai != null && ai.isModified()) {
+                if (ai.isReference()) {
+                    // it an external object, a reference
+                    if (ai.isModified()) {
+                        ReferenceObject ro = ai.getReferenceObject();
                         // check if the object is still externalized
                         byte[] attrSerialized = trans.serialize(ro.getValue());
                         // check if the attribute should remain external
-                        if (this.isExternal(entry.getKey(), ro.getValue(), attrSerialized.length, true)) {
+                        if (this.isExternal(entry.getKey(), ai, attrSerialized.length, true)) {
                             // the attr has been modified and continue external => use a set
                             log.log(Level.FINE, "Setting attribute {0} with reference {1}",
                                     new Object[]{entry.getKey(), ro.getReference()});
                             ai.setLastTouch(System.currentTimeMillis());
                             client.addOperationSet(bulk, ro.getReference(), attrSerialized, exp);
-                            sos.writeObject(trans, ro);
+                            sos.writeObjectAsObject(trans, ro);
+                            if (((CouchbaseManager)manager).isSticky()) {
+                                ai.setSerialized(sos.getLastBytes(4), true);
+                            }
                         } else {
                             // the attribute should be integrated into the session
                             // delete external
@@ -901,47 +923,83 @@ public class CouchbaseWrapperSession extends StandardSession {
                             client.addOperationDelete(bulk, ro.getReference());
                             ai.setLastTouch(System.currentTimeMillis());
                             // assign the internal value as value
-                            entry.setValue(ro.getValue());
-                            sos.write(attrSerialized);
+                            ai.removeReference(ro.getValue());
+                            sos.writeObjectAsArray(attrSerialized, false);
+                            if (((CouchbaseManager)manager).isSticky()) {
+                                ai.setSerialized(attrSerialized, false);
+                            }
                         }
                     } else {
-                        // the attribute was not modified and remain external => just touch
-                        if (ai == null || (System.currentTimeMillis() - ai.getLastTouch()) >
-                                (((CouchbaseManager) manager).getAttrTouchExtraTime() * 1000)) {
-                            // touch
+                        // the attribute was not modified => write the ReferenceObject serialized
+                        byte[] deserialized = ai.getSerialized();
+                        sos.writeObjectAsArray(deserialized, true);
+                        // the count is refreshed but it is never re-integrated if not modified
+                        // the size is more than the specified because is externalized but unknown
+                        this.isExternal(entry.getKey(), ai, Integer.MAX_VALUE, true);
+                        // the attribute reamains external cos it was not modified, when modified will be reintegrated
+                        if ((System.currentTimeMillis() - ai.getLastTouch())
+                                > (((CouchbaseManager) manager).getAttrTouchExtraTime() * 1000)) {
+                            // de-serializate the PersistenceObject to touch it
+                            ai.deserialize(((CouchbaseManager)manager).getTranscoder());
+                            ReferenceObject ro = ai.getReferenceObject();
+                            // touch the reference
                             log.log(Level.FINE, "Touching attribute {0} with reference {1}",
                                     new Object[]{entry.getKey(), ro.getReference()});
-                            if (ai != null) {
-                                ai.setLastTouch(System.currentTimeMillis());
-                            }
+                            ai.setLastTouch(System.currentTimeMillis());
                             client.addOperationTouch(bulk, ro.getReference(), exp);
+                            if (((CouchbaseManager) manager).isSticky()) {
+                                ai.setSerialized(deserialized, true);
+                            }
                         } else {
                             // not touching cos touch time is ok
-                            log.log(Level.FINE, "Avoided touch for attribute {0} with reference {1}",
-                                    new Object[]{entry.getKey(), ro.getReference()});
+                            log.log(Level.FINE, "Avoided touch for attribute {0}", entry.getKey());
                         }
-                        sos.writeObject(trans, ro);
                     }
                 } else {
-                    // the object is a normal object 
-                    int length = sos.writeObject(trans, entry.getValue());
-                    if (this.isExternal(entry.getKey(), entry.getValue(), length, false)) {
-                        // the attribute should be externalized
-                        // create the RO in the map and save the byte in couchbase
-                        byte[] serializedValue = sos.undo();
-                        ReferenceObject ro = new ReferenceObject();
-                        ro.setValue(entry.getValue());
-                        entry.setValue(ro);
-                        log.log(Level.FINE, "Adding attribute {0} with reference {1}", 
-                                new Object[]{entry.getKey(), ro.getReference()});
-                        client.addOperationAdd(bulk, ro.getReference(), serializedValue, exp);
-                        sos.writeObject(trans, ro);
-                    }
-                    // mark the info as written
-                    if (ai != null) {
-                        ai.setLastTouch(System.currentTimeMillis());
+                    // the object is a normal object not externalized
+                    if (ai.isModified()) {
+                        // it is modified => just write the object
+                        int length = sos.writeObjectAsObject(trans, ai.getValue());
+                        boolean isExternal = this.isExternal(entry.getKey(), ai, length, false);
+                        if (isExternal) {
+                            // the attribute should be externalized
+                            // create the RO in the map and save the byte in couchbase
+                            byte[] serializedValue = sos.undo(4);
+                            ReferenceObject ro = new ReferenceObject();
+                            ro.setValue(ai.getValue());
+                            log.log(Level.FINE, "Modified attribute {0} externalized with reference {1}",
+                                    new Object[]{entry.getKey(), ro.getReference()});
+                            ai.setLastTouch(System.currentTimeMillis());
+                            client.addOperationAdd(bulk, ro.getReference(), serializedValue, exp);
+                            sos.writeObjectAsObject(trans, ro);
+                            ai.setValue(ro);
+                        }
+                        if (((CouchbaseManager) manager).isSticky()) {
+                            ai.setSerialized(sos.getLastBytes(4), isExternal);
+                        }
+                    } else {
+                        // it is not modified
+                        if (this.isExternal(entry.getKey(), ai, ai.getSerialized().length, false)) {
+                            // it is externalized as a separate object
+                            ReferenceObject ro = new ReferenceObject();
+                            ro.setValue(ai.getValue());
+                            log.log(Level.FINE, "Non-modified attribute {0} externalized with reference {1}",
+                                    new Object[]{entry.getKey(), ro.getReference()});
+                            ai.setLastTouch(System.currentTimeMillis());
+                            client.addOperationAdd(bulk, ro.getReference(), ai.getSerialized(), exp);
+                            sos.writeObjectAsObject(trans, ro);
+                            ai.setValue(ro);
+                            if (((CouchbaseManager) manager).isSticky()) {
+                                ai.setSerialized(sos.getLastBytes(4), true);
+                            }
+                        } else {
+                            // it remains integrated with the session until modified
+                            sos.writeObjectAsArray(ai.getSerialized(), false);
+                        }
                     }
                 }
+                log.log(Level.FINER, "DELETE: Processed attribute: {0} - hasStats={1} - isModified={2} - isReference={3}", 
+                        new Object[]{entry.getKey(), ai.isStatsTracked(), ai.isModified(), ai.isReference()});
             }
             // process deletes
             for (String reference: this.deletedAttributes) {
@@ -950,7 +1008,9 @@ public class CouchbaseWrapperSession extends StandardSession {
             }
             this.deletedAttributes.clear();
             // write and return the object
-            return sos.toByteArray();
+            byte[] result = sos.toByteArray();
+            log.log(Level.FINE, "Result - session size: {0}", result.length);
+            return result;
         } catch (IOException e) {
             log.log(Level.SEVERE, "Exception serializing session", e);
             throw new IllegalStateException("Illegal state serializing session", e);
@@ -970,9 +1030,10 @@ public class CouchbaseWrapperSession extends StandardSession {
      */
     synchronized public void processDelete(Client client, BulkClientRequest bulk) {
         // search all entries that are references
-        for (Object value : attributes.values()) {
-            if (value instanceof ReferenceObject) {
-                String reference = ((ReferenceObject) value).getReference();
+        for (AttributeInfo ai : this.attrInfos.values()) {
+            log.log(Level.FINE, "DELETE: attribute info {0}", ai);
+            if (ai.isReference()) {
+                String reference = ai.getReference();
                 log.log(Level.FINE, "Deleting attribute with reference {0}", reference);
                 client.addOperationDelete(bulk, reference);
             }
@@ -988,20 +1049,13 @@ public class CouchbaseWrapperSession extends StandardSession {
     /**
      * Method to fill a session using the serialized byte array.
      * @param in
-     * @param trans
      * @param status
      * @param cas 
      */
-    synchronized public void processFill(byte[] in, TranscoderUtil trans, SessionMemStatus status, long cas) {
+    synchronized public void processFill(byte[] in, SessionMemStatus status, long cas) {
         SessionInputStream sis = null;
         try {
             sis = new SessionInputStream(in);
-            // TODO: In glassfish4 the CDI needs that the context class loader
-            //       was the same than in the app (if it is different the
-            //       org.jboss.weld.manager.BeanManagerImpl is not deserialized)
-            //       For the moment a workaround to save cl and set the app one
-            ClassLoader cl = Thread.currentThread().getContextClassLoader();
-            Thread.currentThread().setContextClassLoader(this.manager.getContainer().getLoader().getClassLoader());
             this.id = sis.readString();
             this.setSipApplicationSessionId(sis.readString());
             this.setBeKey(sis.readString());
@@ -1031,26 +1085,31 @@ public class CouchbaseWrapperSession extends StandardSession {
             }
             if (status.isLocked() || ((CouchbaseManager) manager).isSticky()) {
                 // attributes are loaded only if sticky or non-sticky but locked
-                Map<String,Object> current = new HashMap<String,Object>(this.attributes);
+                Map<String,AttributeInfo> current = new HashMap<String,AttributeInfo>(this.attrInfos);
                 this.attributes.clear();
+                this.attrInfos.clear();
                 while (sis.available() > 0) {
                     // read the key and the object
                     String name = sis.readString();
-                    Object value = sis.readObject(trans);
-                    this.attributes.put(name, value);
-                    if (value instanceof ReferenceObject) {
-                        ReferenceObject ro = (ReferenceObject) value;
-                        // the value was a reference => get the previous value and touch time
-                        // sticky stores the value and touch non-sticky just last time
-                        Object curr = current.get(name);
-                        if (curr != null && curr instanceof ReferenceObject) {
-                            ro.setValue(((ReferenceObject) curr).getValue());
-                        }
+                    Map.Entry<Boolean,byte[]> value = sis.readObjectAsArray();
+                    log.log(Level.FINE, "DELETE: reading attribute: {0}", name);
+                    // read current value in the session
+                    AttributeInfo ai = current.get(name);
+                    if (ai == null) {
+                        // create new attr info
+                        ai = new AttributeInfo();
+                    } else if (((CouchbaseManager)manager).isSticky()) {
+                        // clean possible references if non-sticky
+                        ai.removeReference(null);
                     }
+                    // associate the new serialized
+                    ai.setSerialized(value.getValue(), value.getKey());
+                    // add the Attribute info
+                    this.attrInfos.put(name, ai);
+                    // create the attributes with something (serialized or value)
+                    this.attributes.put(name, (ai.getValue() == null)? ai.getSerialized() : ai.getValue());
                 }
             }
-            // set the same class loader than before
-            Thread.currentThread().setContextClassLoader(cl);
             // no deleted attributes
             this.deletedAttributes.clear();
             // set new mstatus and cas

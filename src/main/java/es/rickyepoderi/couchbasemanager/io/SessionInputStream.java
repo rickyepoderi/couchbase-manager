@@ -39,6 +39,8 @@ import es.rickyepoderi.couchbasemanager.couchbase.transcoders.TranscoderUtil;
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
+import java.util.AbstractMap;
+import java.util.Map;
 
 /**
  * <p>InputStream used to de-serialize a session. It has special methods to read
@@ -82,15 +84,40 @@ public class SessionInputStream extends ByteArrayInputStream {
     }
     
     /**
-     * It reads any object using the transcoder passed to deserialize the
-     * object.
+     * It reads any object using the transcoder passed to de-serialize the
+     * object. The object is de-serialized and returned.
      * @param trans The transcoder used to deserialize the object
      * @return The object read from the byte array
      * @throws IOException Some error reading the object
      */
-    public Object readObject(TranscoderUtil trans) throws IOException {
+    public Object readObjectAsObject(TranscoderUtil trans) throws IOException {
+        // read the not used int that specifies the length
+        this.readInt();
+        // read the object
         Object o = trans.deserialize(dis);
         return o;
+    }
+    
+    /**
+     * It reads the object but not de-serializing it. It just returns the
+     * byte array with the serialized object.
+     * @return The byte array for the serialized object and if the object is a ReferenceObject
+     *         (I used a Entry to avoid creating a new class)
+     * @throws IOException Some error reading from the buffer
+     */
+    public Map.Entry<Boolean,byte[]> readObjectAsArray() throws IOException {
+        int length = this.readInt();
+        boolean isRef = false;
+        if (length < 0) {
+            // it is a ReferenceObject
+            length = -length;
+            isRef = true;
+        }
+        byte[] data = new byte[length];
+        if (dis.read(data) < length) {
+            throw new IOException("Invalid length of the object");
+        }
+        return new AbstractMap.SimpleImmutableEntry<Boolean,byte[]>(isRef, data);
     }
     
     /**

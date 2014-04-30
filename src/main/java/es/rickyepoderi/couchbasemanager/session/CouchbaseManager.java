@@ -325,6 +325,14 @@ public class CouchbaseManager extends StandardManager {
     public void setTranscoder(TranscoderUtil transcoder) {
         this.transcoder = transcoder;
     }
+    
+    /**
+     * Getter for the transcoder
+     * @return The transcoder used in the manager
+     */
+    public TranscoderUtil getTranscoder() {
+        return this.transcoder;
+    }
 
     /**
      * Getter for the PersistTo property.
@@ -866,7 +874,7 @@ public class CouchbaseManager extends StandardManager {
             if (res.isSuccess()) {
                 log.fine("The session was in the repository, returning it");
                 byte[] loaded = res.getValue();
-                session.processFill(loaded, this.transcoder, expected, res.getCas());
+                session.processFill(loaded, expected, res.getCas());
             } else if (res.isNotFound()) {
                 // TODO: I don't know why sometimes "NOT_FOUND" and "Not Found"
                 //       is returned. Maybe I should try to check the result 
@@ -905,7 +913,7 @@ public class CouchbaseManager extends StandardManager {
         // save the session inside reposiroty
         ClientResult res = null;
         BulkClientRequest bulk = client.createBulk();
-        byte[] sesSerialized = session.processSave(client, bulk, transcoder);
+        byte[] sesSerialized = session.processSave(client, bulk);
         if (isSticky()) {
             if (exec == null) {
                 res = client.finishSetSync(bulk, session.getId(), 
@@ -1038,7 +1046,7 @@ public class CouchbaseManager extends StandardManager {
         log.log(Level.FINE, "CouchbaseManager.doSessionAdd(Session): init {0}", session.toString());
         session.waitOnExecution();
         BulkClientRequest bulk = client.createBulk();
-        byte[] sesSerialized = session.processSave(client, bulk, transcoder);
+        byte[] sesSerialized = session.processSave(client, bulk);
         ClientResult res = client.finishAddSync(bulk, session.getId(), 
                 sesSerialized, this.getMaxInactiveInterval());
         if (!res.isSuccess()) {
@@ -1071,9 +1079,20 @@ public class CouchbaseManager extends StandardManager {
                         try {
                             sess.isValid();
                             // remove any possible external attribute deleted
-                            for (String reference: sess.getDeledAttributes()) {
+                            for (AttributeInfo ai: sess.getAttributeInfos()) {
                                 try {
-                                    this.removeAttributeValue(sess, reference);
+                                    if (ai.isReference()) {
+                                        this.removeAttributeValue(sess, ai.getReference());
+                                    }
+                                } catch (Exception e) {
+                                    // it does not matter, it could have been
+                                    // deleted by another server in the cluster
+                                }
+                            }
+                            // remove any deleted
+                            for (String name: sess.getDeletedAttributes()) {
+                                try {
+                                    this.removeAttributeValue(sess, name);
                                 } catch (Exception e) {
                                     // it does not matter, it could have been
                                     // deleted by another server in the cluster

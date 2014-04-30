@@ -91,15 +91,33 @@ public class SessionOutputStream extends ByteArrayOutputStream {
     }
     
     /**
-     * Write an object using the transcoder passed as argument.
+     * Write an object using the transcoder passed as argument. Now the size 
+     * of the object is stored as an int at the beginning. Besides if the object
+     * is a reference (ReferenceObject) the length is negative.
      * @param trans The transcoder to use for serializing
      * @param o The object to write
-     * @return The lenth of the object serialized
+     * 
+     * @return The length of the object serialized (int included)
      * @throws IOException Some error writing the object
      */
-    public int writeObject(TranscoderUtil trans, Object o) throws IOException {
+    public int writeObjectAsObject(TranscoderUtil trans, Object o) throws IOException {
+        byte[] data = trans.serialize(o);
+        return this.writeObjectAsArray(data, o instanceof ReferenceObject);
+    }
+    
+    /**
+     * Write an object but the object is already serialized. The length is stored
+     * first as an integer. If the object is a ReferenceObject the length is written
+     * as the negative length.
+     * @param data The object already serialized
+     * @param isRef The object is a reference
+     * @return The length written in the buffer 
+     * @throws IOException Some error writing the object
+     */
+    public int writeObjectAsArray(byte[] data, boolean isRef) throws IOException {
         previous = this.size();
-        trans.serialize(o, dos);
+        this.writeInt(isRef? -data.length : data.length);
+        this.write(data);
         dos.flush();
         return this.size() - previous;
     }
@@ -147,16 +165,28 @@ public class SessionOutputStream extends ByteArrayOutputStream {
      * Method to undo the last write. The previous position is restored and the
      * byte array corresponding to the last write. Only one operation can be 
      * undone.
+     * @param offset An offset to avoid
      * @return The byte array corresponding to the last write
      * @throws IOException Some error doing the undo
      */
-    public synchronized byte[] undo() throws IOException {
+    public synchronized byte[] undo(int offset) throws IOException {
+        byte[] copy = getLastBytes(offset);
+        this.count = this.previous;
+        this.previous = -1;
+        return copy;
+    }
+    
+    /**
+     * Method that return the last write but not modifying nothing.
+     * @param offset An offset to avoid length or whatever
+     * @return The byte array corresponding to the last write
+     * @throws IOException Some error doing the undo
+     */
+    public byte[] getLastBytes(int offset) throws IOException {
         if (this.previous == -1) {
             throw new IOException("Only one operation can be undone.");
         }
-        byte[] copy = Arrays.copyOfRange(this.buf, previous, this.count);
-        this.count = this.previous;
-        this.previous = -1;
+        byte[] copy = Arrays.copyOfRange(this.buf, previous + offset, this.count);
         return copy;
     }
 }
