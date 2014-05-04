@@ -114,7 +114,7 @@ public class Client {
     
     /**
      * Constructor of the client with all the properties.
-     * @param baseURIsThe URIs where couchbase servers are
+     * @param baseURIs The URIs where couchbase servers are
      * @param bucket The bucket for the sessions
      * @param username The username
      * @param password The password

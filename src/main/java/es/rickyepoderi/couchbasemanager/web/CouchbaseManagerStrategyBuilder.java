@@ -96,6 +96,11 @@ import net.spy.memcached.ReplicateTo;
  *   <li>attrTouchExtraTime: The external attributes are saved with an extra
  *       time (expiration), this way the external attributes are not always 
  *       touched when not used. Specified in seconds. Default: 600 (10 min).</li>
+ *   <li>extraInactiveInterval: Since version 0.5.0 the session maximum
+ *       inactivity interval is incremented by a extra amount of seconds in
+ *       which the session remains in couchbase. This extra time is given to access
+ *       session information before expiration in couchbase (JavaEE listeners
+ *       mainly). Desfaul: 180 seconds.</li>
  * </ul>
  * 
  * <p>Example of configuration:</p>
@@ -184,6 +189,13 @@ public abstract class CouchbaseManagerStrategyBuilder extends BasePersistenceStr
      */
     public static final String PROP_ATTR_USAGE_CONDITION = "attrUsageCondition";
     
+    /**
+     * The property to define the extra number of seconds of expirations for
+     * sessions in couchbase. Now the sessions are expired manually in order
+     * to listeners to operate normally.
+     */
+    public static final String PROP_EXTRA_INACTIVE_INTERVAL = "extraInactiveInterval";
+    
     //
     // DEFAULT VALUES FOR PROPERTIES
     //
@@ -255,6 +267,11 @@ public abstract class CouchbaseManagerStrategyBuilder extends BasePersistenceStr
     protected static final UsageConfiguration DEFAULT_USAGE_CONFIGURATION_NON_STICKY = 
             new UsageConfiguration(10, 30, 45);
     
+    /**
+     * The default number of seconds of extra life for sessions.
+     */
+    protected static final int DEFAULT_EXTRA_INACTIVE_INTERVAL = 3*60;
+    
     //
     // REAL PROPERTIES
     //
@@ -318,4 +335,9 @@ public abstract class CouchbaseManagerStrategyBuilder extends BasePersistenceStr
      * The property for usage management for external attributes.
      */
     protected UsageConfiguration attrUsageCondition = null;
+    
+    /**
+     * The property to handle the extra time giving for expiration of sessions.
+     */
+    protected int extraInactiveInterval = DEFAULT_EXTRA_INACTIVE_INTERVAL;
 }

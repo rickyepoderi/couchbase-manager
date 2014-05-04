@@ -218,6 +218,11 @@ public class CouchbaseManager extends StandardManager {
     protected UsageConfiguration attrUsageCondition =
             new UsageConfiguration(100, 0, 0);
     
+    /**
+     * Extra inactive interval for sessions.
+     */
+    protected int extraInactiveInterval = 3*60;
+    
     //
     // CONSTRUCTOR
     //
@@ -413,6 +418,30 @@ public class CouchbaseManager extends StandardManager {
      */
     public void setAttrUsageCondition(UsageConfiguration attrUsageCondition) {
         this.attrUsageCondition = attrUsageCondition;
+    }
+
+    /**
+     * Getter for the extra inactive interval.
+     * @return The extra inactive interval for sessions
+     */
+    public int getExtraInactiveInterval() {
+        return extraInactiveInterval;
+    }
+
+    /**
+     * Setter for the extra inactive interval.
+     * @param extraInactiveInterval The new interval
+     */
+    public void setExtraInactiveInterval(int extraInactiveInterval) {
+        this.extraInactiveInterval = extraInactiveInterval;
+    }
+    
+    /**
+     * Return the time for expirations with inactive plus the extra time.
+     * @return The extra interval to maintain the session in the repository
+     */
+    public int getMaxInactiveIntervalWithExtra() {
+        return this.getMaxInactiveInterval() + this.getExtraInactiveInterval();
     }
     
     //
@@ -917,18 +946,18 @@ public class CouchbaseManager extends StandardManager {
         if (isSticky()) {
             if (exec == null) {
                 res = client.finishSetSync(bulk, session.getId(), 
-                        sesSerialized, this.getMaxInactiveInterval());
+                        sesSerialized, this.getMaxInactiveIntervalWithExtra());
             } else {
                 client.finishSetAsync(bulk, session.getId(), 
-                        sesSerialized, this.getMaxInactiveInterval(), exec);
+                        sesSerialized, this.getMaxInactiveIntervalWithExtra(), exec);
             }
         } else {
             if (exec == null) {
                 res = client.waitAndFinishCasSync(bulk, session.getId(), 
-                        sesSerialized, session.getCas(), this.getMaxInactiveInterval());
+                        sesSerialized, session.getCas(), this.getMaxInactiveIntervalWithExtra());
             } else {
                 client.waitAndFinishCasAsync(bulk, session.getId(), 
-                        sesSerialized, session.getCas(), this.getMaxInactiveInterval(), exec);
+                        sesSerialized, session.getCas(), this.getMaxInactiveIntervalWithExtra(), exec);
             }
         }
         if (res != null) {
@@ -1048,7 +1077,7 @@ public class CouchbaseManager extends StandardManager {
         BulkClientRequest bulk = client.createBulk();
         byte[] sesSerialized = session.processSave(client, bulk);
         ClientResult res = client.finishAddSync(bulk, session.getId(), 
-                sesSerialized, this.getMaxInactiveInterval());
+                sesSerialized, this.getMaxInactiveIntervalWithExtra());
         if (!res.isSuccess()) {
             session.setMemStatus(SessionMemStatus.ERROR);
             IllegalStateException e = new IllegalStateException(res.getStatus().getMessage(), res.getException());
@@ -1076,30 +1105,14 @@ public class CouchbaseManager extends StandardManager {
                     // only block if it is expired locally, this
                     // way avoid access repo until is accessed locally
                     if (sess.lockBackground()) {
+                        boolean valid = true;
                         try {
-                            sess.isValid();
-                            // remove any possible external attribute deleted
-                            for (AttributeInfo ai: sess.getAttributeInfos()) {
-                                try {
-                                    if (ai.isReference()) {
-                                        this.removeAttributeValue(sess, ai.getReference());
-                                    }
-                                } catch (Exception e) {
-                                    // it does not matter, it could have been
-                                    // deleted by another server in the cluster
-                                }
-                            }
-                            // remove any deleted
-                            for (String name: sess.getDeletedAttributes()) {
-                                try {
-                                    this.removeAttributeValue(sess, name);
-                                } catch (Exception e) {
-                                    // it does not matter, it could have been
-                                    // deleted by another server in the cluster
-                                }
-                            }
+                            valid = sess.isValid();
                         } finally {
-                            sess.unlockBackground();
+                            if (valid) {
+                                // only unlock if valid (not expired)
+                                sess.unlockBackground();
+                            }
                         }
                     }
                 }
@@ -1107,7 +1120,7 @@ public class CouchbaseManager extends StandardManager {
         }
         long timeEnd = System.currentTimeMillis();
         log.log(Level.FINE, "CouchbaseManager.processExpires(): exit. {0} sessions processed in {1} ms", 
-                new Object[] {current.length, (timeEnd - timeNow)});
+                new Object[] {(current != null)? current.length:0, (timeEnd - timeNow)});
     }
     
 }

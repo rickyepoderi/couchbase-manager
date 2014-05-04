@@ -117,6 +117,7 @@ public class CouchbaseManagerStrategyBuilderV3 extends CouchbaseManagerStrategyB
         manager.setAttrMaxSize(attrMaxSize);
         manager.setAttrTouchExtraTime(attrTouchExtraTime);
         manager.setAttrUsageCondition(attrUsageCondition);
+        manager.setExtraInactiveInterval(extraInactiveInterval);
         log.log(Level.FINE, "MemManagerStrategyBuilder.initializePersistenceStrategy: ioUtils={0}", ioUtils);
         GlassfishTranscoderUtil transcoder = new GlassfishTranscoderUtil();
         transcoder.setIoUtils(ioUtils);
@@ -236,6 +237,16 @@ public class CouchbaseManagerStrategyBuilderV3 extends CouchbaseManagerStrategyB
                         } catch (NumberFormatException e) {
                             log.log(Level.WARNING, "Invalid int format for attrUsageCondition {0}", value);
                             attrUsageCondition = null;
+                        }
+                    } else if (name.equalsIgnoreCase(PROP_EXTRA_INACTIVE_INTERVAL)) {
+                        try {
+                            extraInactiveInterval = Integer.parseInt(value);
+                            if (extraInactiveInterval < 0) {
+                                log.log(Level.WARNING, "Invalid int format for extraInactiveInterval {0}", value);
+                                extraInactiveInterval = DEFAULT_EXTRA_INACTIVE_INTERVAL;
+                            }
+                        } catch (NumberFormatException e) {
+                            log.log(Level.WARNING, "Invalid int format for extraInactiveInterval {0}", value);
                         }
                     }
                 }

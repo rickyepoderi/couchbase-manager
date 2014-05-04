@@ -306,8 +306,11 @@ public class CouchbaseWrapperSession extends StandardSession {
             // sticky only for ReferenceObjects
             // references are maintained for expiration
             if (!((CouchbaseManager) manager).isSticky()) {
-                // non-sticky clear all values maintaining references
-                ai.setValue(null);
+                // non-sticky clear all values maintaining references, take care
+                // with non deserialized values
+                if (ai.getValue() != null) {
+                    ai.setValue(null);
+                }
             } else if (ai.isReference()) {
                 // sticky only delete externalized attributes but maintain serialized
                 // the value in real attributes is just the serialized to mark it
@@ -323,6 +326,7 @@ public class CouchbaseWrapperSession extends StandardSession {
         }
         // set to error if some error has ocurred
         if (!res.isSuccess()) {
+            log.log(Level.SEVERE, "Operation: {0}", res.getType());
             log.log(Level.SEVERE, "Error in the background operation. Marking the session to ERROR", 
                     new IllegalStateException(res.getStatus().getMessage(), res.getException()));
             setMemStatus(SessionMemStatus.ERROR);
@@ -605,9 +609,9 @@ public class CouchbaseWrapperSession extends StandardSession {
     synchronized public boolean hasExpired() {
         log.fine("CouchbaseWrapperSession.hasExpired(): init");
         boolean expired;
-        if (isLocked() && !((CouchbaseManager) manager).isSticky()) {
-            // session is currently locked in non-sticky => not expired
-            expired = false;
+        if (isLocked()) {
+            // session is currently locked => trust in local expired
+            expired = localHasExpired();
         } else if (SessionMemStatus.NOT_EXISTS.equals(this.mstatus)) {
             // session is NOT_EXISTS => expired
             expired = true;
@@ -616,12 +620,13 @@ public class CouchbaseWrapperSession extends StandardSession {
             // check lock expiration and if expired re-check with a load.
             // Take in mind that the session can be deleted by other server
             // but we are saying it is alive (as soon as the session is locked
-            // real value takes precedence)
+            // real value takes precedence). The session will be expired
+            // if deleted or has real times expired
             expired = localHasExpired();
             if (expired) {
                 doLoad(SessionMemStatus.NOT_LOADED);
                 // session is now refreshed => NOT_EXISTS only expired value
-                expired = SessionMemStatus.NOT_EXISTS.equals(mstatus);
+                expired = SessionMemStatus.NOT_EXISTS.equals(mstatus) || localHasExpired();
             }
         }
         log.log(Level.FINE, "CouchbaseWrapperSession.hasExpired(): exit {0}", expired);
@@ -838,7 +843,6 @@ public class CouchbaseWrapperSession extends StandardSession {
             }
             // if the usage is reliable calculate if it should be externalized
             if (ai.getAttributeLiveTimes(this.usageTimes) > m.getAttrUsageCondition().getMinimum()) {
-                log.log(Level.FINER, "DELETE: name={0} usage={0}", ai.getUsage(usageTimes));
                 if (isExternalNow) {
                     // if it external now it remains external while the usage
                     // is below the upper limit
@@ -857,7 +861,7 @@ public class CouchbaseWrapperSession extends StandardSession {
             ai.cleanStats();
             isExternal = false;
         }
-        log.log(Level.INFO, "DELETE: isExternal: {0} - {1} -> {2}",  
+        log.log(Level.FINEST, "isExternal: name={0} - length={1} - isExternal={2}",  
                 new Object[]{name, length, isExternal});
         return isExternal;
     }
@@ -889,13 +893,14 @@ public class CouchbaseWrapperSession extends StandardSession {
             sos.writeLong(this.lastAccessedTime);
             sos.writeString(this.username);
             // the exp time for attr is session timeout + extra time
-            int exp = manager.getMaxInactiveInterval() + ((CouchbaseManager)manager).getAttrTouchExtraTime();
+            int exp = ((CouchbaseManager)manager).getMaxInactiveIntervalWithExtra() 
+                    + ((CouchbaseManager)manager).getAttrTouchExtraTime();
             // write the attributes one by one
             for (Map.Entry<String, AttributeInfo> entry : this.attrInfos.entrySet()) {
                 // write the key and the object
                 sos.writeString(entry.getKey());
                 AttributeInfo ai = entry.getValue();
-                log.log(Level.FINER, "DELETE: Processing attribute: {0} - hasStats={1} - isModified={2} - isReference={3}", 
+                log.log(Level.FINER, "Processing attribute: {0} - hasStats={1} - isModified={2} - isReference={3}", 
                         new Object[]{entry.getKey(), ai.isStatsTracked(), ai.isModified(), ai.isReference()});
                 // check if the object is a reference
                 if (ai.isReference()) {
@@ -998,8 +1003,6 @@ public class CouchbaseWrapperSession extends StandardSession {
                         }
                     }
                 }
-                log.log(Level.FINER, "DELETE: Processed attribute: {0} - hasStats={1} - isModified={2} - isReference={3}", 
-                        new Object[]{entry.getKey(), ai.isStatsTracked(), ai.isModified(), ai.isReference()});
             }
             // process deletes
             for (String reference: this.deletedAttributes) {
@@ -1031,7 +1034,6 @@ public class CouchbaseWrapperSession extends StandardSession {
     synchronized public void processDelete(Client client, BulkClientRequest bulk) {
         // search all entries that are references
         for (AttributeInfo ai : this.attrInfos.values()) {
-            log.log(Level.FINE, "DELETE: attribute info {0}", ai);
             if (ai.isReference()) {
                 String reference = ai.getReference();
                 log.log(Level.FINE, "Deleting attribute with reference {0}", reference);
@@ -1092,13 +1094,12 @@ public class CouchbaseWrapperSession extends StandardSession {
                     // read the key and the object
                     String name = sis.readString();
                     Map.Entry<Boolean,byte[]> value = sis.readObjectAsArray();
-                    log.log(Level.FINE, "DELETE: reading attribute: {0}", name);
                     // read current value in the session
                     AttributeInfo ai = current.get(name);
                     if (ai == null) {
                         // create new attr info
                         ai = new AttributeInfo();
-                    } else if (((CouchbaseManager)manager).isSticky()) {
+                    } else if (!((CouchbaseManager)manager).isSticky()) {
                         // clean possible references if non-sticky
                         ai.removeReference(null);
                     }
